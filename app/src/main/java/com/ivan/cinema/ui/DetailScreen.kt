@@ -80,7 +80,16 @@ fun DetailScreen(
 
     LaunchedEffect(merged.key) {
         loading = true
-        details = Aggregator.fetchDetailAll(merged.hits)
+        // 单源命中时按片名搜全网补全（否则播放器只有一条线路，脏源无法绕过）
+        val fullHits = if (merged.hits.size < 3) {
+            com.ivan.cinema.data.Aggregator.expandHits(
+                com.ivan.cinema.data.SourceHealth.sources(com.ivan.cinema.IVANApp.ctx()),
+                merged.name,
+                merged.year,
+                merged.hits
+            )
+        } else merged.hits
+        details = Aggregator.fetchDetailAll(fullHits)
             .filter { it.lines.isNotEmpty() }
             .sortedByDescending { it.lines.maxOf { l -> l.episodes.size } }
         loading = false
