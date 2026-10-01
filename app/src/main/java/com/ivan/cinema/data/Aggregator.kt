@@ -100,6 +100,36 @@ object Aggregator {
     }
 
     /**
+     * 补全多源命中：从首页/分类进入详情页时 hits 往往只有 1 条（该分类列表只来自一个源），
+     * 于是播放器拿不到其他源、脏源无法绕过。这里按片名搜全网把同片的其他源补齐。
+     */
+    suspend fun expandHits(
+        sources: List<VodSource>,
+        name: String,
+        year: String,
+        existing: List<SourceHit>
+    ): List<SourceHit> = coroutineScope {
+        val key = mergeKey(name, year)
+        val sem = Semaphore(10)
+        val extra = sources.map { src ->
+            async(Dispatchers.IO) {
+                sem.withPermit {
+                    MacCmsApi(src).search(name).mapNotNull { it ->
+                        if (mergeKey(it.name, it.year) == key) SourceHit(src, it.vodId, it.remarks) else null
+                    }
+                }
+            }
+        }.awaitAll().flatten()
+
+        val seen = HashSet<String>()
+        val out = ArrayList<SourceHit>(existing.size + extra.size)
+        for (h in existing + extra) {
+            if (seen.add(h.source.api)) out.add(h)
+        }
+        out
+    }
+
+    /**
      * 分类：聚合每源的 tid 列表，一页。
      * [maxSources] 限制参与的源数 —— 横滚行只需要几十张海报，
      * 用全部 20 源会把首屏拖慢 4 倍（20 源 × 4 行 = 80 个请求）。
