@@ -13,11 +13,11 @@ import org.json.JSONObject
  */
 object SupabaseConfig {
 
-    /** 用户在 Supabase 控制台 Project Settings → API 里复制：Project URL */
-    const val URL = ""
+    /** Project URL（不含 /rest/v1 后缀；代码内部自己拼 /auth/v1 与 /rest/v1） */
+    const val URL = "https://ooyxaaabfehhknwljbnh.supabase.co"
 
-    /** 同一个页面里的 anon public key（不要用 service_role key） */
-    const val ANON_KEY = ""
+    /** Publishable key（新版命名，等价于旧的 anon public key；绝不要用 sb_secret_ 开头的） */
+    const val ANON_KEY = "sb_publishable_g44SsX-43Rd2tvKROOBTEw_7hnuPs_R"
 
     private const val ASSET = "config.json"
 
