@@ -73,12 +73,26 @@ set JAVA_HOME=D:\Android\jdk-17.0.2&& set ANDROID_HOME=D:\Android\Sdk&& D:\Andro
 
 ## 六、待办 / 未完成
 
-- [x] ~~编译并发布 v1.0.2~~ —— **已完成**（2026-10-02，Release ID 401209013，APK 2,909,990 B）
-- [x] ~~上传 v1.0.2 的 release APK 到 GitHub Release~~ —— **已完成**，`update.json` 已指向 v1.0.2（versionCode=3）
-- [x] ~~复制 release APK 到桌面~~ —— **已完成**（sha256 与 Release 资产一致）
-- [x] ~~推送最新源码到 GitHub~~ —— **已完成**（只推了 3 个变化文件，单 commit）
+- [x] ~~v1.0.2 发布~~ —— 已完成（Release ID 401209013）
+- [x] ~~**v1.0.3：应用内更新**~~ —— 已完成（Release ID 401216119，APK 2,922,758 B，versionCode 4）
+      点「更新」在 APP 内下载（ghfast/gh-proxy/ghproxy 依次重试）→ 进度条 → 拉起系统安装器，全程不跳浏览器
+- [x] ~~**v1.0.3：观看记录云端同步常驻化**~~ —— 已完成
+      启动自动拉取 / 播放进度 60s 节流上传 / 退出播放页强制同步
 - [ ] **提醒用户轮换 GitHub token**（已出现在对话记录中）
-- [ ] 真机验收：登录（邮箱+密码）→ 身份位 SVIP → 观看记录同步 → 换源 → 筛选页 —— **未执行**
+- [ ] 真机验收 —— **未执行**。重点：应用内更新链路（含「安装未知来源」授权）、A/B 设备观看记录同步
+- [ ] 应用内更新未做 APK 完整性校验（只依赖 HTTPS 证书），后续可加 sha256 比对 —— **未执行**
+
+## 六之二、更新与同步的实现位置（改之前先读）
+
+| 关注点 | 文件 |
+|---|---|
+| 更新清单拉取（5 镜像并发竞速） | `data/UpdateChecker.kt` |
+| APK 下载 + 进度 + 安装 | `data/ApkUpdater.kt` |
+| 安装包共享路径 | `res/xml/file_paths.xml`（只暴露 `filesDir/apk/`） |
+| 权限 / FileProvider 声明 | `AndroidManifest.xml` |
+| 更新 UI（按钮随状态机变化） | `ui/SettingsScreen.kt` |
+| 云端账号 + 观看记录同步 | `data/Account.kt`、`data/SupabaseClient.kt` |
+| 同步触发点 | `IVANApp.onCreate`（启动）、`PlayerActivity.saveProgress` / `onDispose`（进度） |
 
 ## 七、源码结构速查
 
