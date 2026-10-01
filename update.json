@@ -1,1 +1,1 @@
-{"versionCode":3,"versionName":"1.0.2","url":"https://github.com/IvanXxxxyyuffff/ivan-cinema/releases/download/v1.0.2/IVAN-CINEMA-v1.0.2.apk","notes":"新增：Supabase 邮箱注册/登录 + 观看记录多设备同步；首页腾讯视频式布局；筛选页（分类/地区/类型/年份/排序）；全屏沉浸式；详情页多源换源；更新通道国内镜像 + VPN 智能路由"}
+{"versionCode":4,"versionName":"1.0.3","url":"https://github.com/IvanXxxxyyuffff/ivan-cinema/releases/download/v1.0.3/IVAN-CINEMA-v1.0.3.apk","notes":"应用内更新：下载后直接拉起系统安装器，不再跳浏览器（国内镜像加速 + 进度显示）；观看记录云端同步常驻化（启动自动拉取、进度节流上传、退出强制同步）"}
