@@ -442,9 +442,10 @@ class PlayerActivity : ComponentActivity() {
                     Text(err, style = androidx.compose.material3.MaterialTheme.typography.titleMedium, color = Color.White)
                     Spacer(Modifier.height(Space.md))
                     Row(horizontalArrangement = Arrangement.spacedBy(Space.lg)) {
+                        // 换源是脏源的唯一出路：只要有别的线路就必须给出来
                         if (lines.size > 1) {
                             Text(
-                                "换一条线路",
+                                "换一条线路（${lines.size} 条可选）",
                                 style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
                                 color = Color.White,
                                 modifier = Modifier
@@ -485,8 +486,9 @@ class PlayerActivity : ComponentActivity() {
             }
 
             // ── 腾讯视频式控制层：无面板、无圆角卡，只有黑渐变遮罩 ──
+            // 错误态时不显示（否则中央播放键会压住「重试」按钮）
             AnimatedVisibility(
-                visible = controlsVisible,
+                visible = controlsVisible && playbackError == null,
                 enter = fadeIn(androidx.compose.animation.core.tween(180)),
                 exit = fadeOut(androidx.compose.animation.core.tween(150)),
                 modifier = Modifier.fillMaxSize()
