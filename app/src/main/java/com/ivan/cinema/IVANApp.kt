@@ -28,7 +28,7 @@ class IVANApp : Application(), ImageLoaderFactory {
         com.ivan.cinema.data.SourceHealth.init(this)
         // 本地账号 + 静默检查 APP 更新
         com.ivan.cinema.data.Account.init(this)
-        com.ivan.cinema.data.UpdateChecker.check(this, 1)
+        com.ivan.cinema.data.UpdateChecker.check(this, BuildConfig.VERSION_CODE)
     }
 
     /** 封面加载全局单例：磁盘缓存 + 150ms 交叉淡入 + 高并发连接调度 */
