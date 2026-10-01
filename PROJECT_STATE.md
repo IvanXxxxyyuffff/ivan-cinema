@@ -73,12 +73,12 @@ set JAVA_HOME=D:\Android\jdk-17.0.2&& set ANDROID_HOME=D:\Android\Sdk&& D:\Andro
 
 ## 六、待办 / 未完成
 
-- [ ] **编译并发布 v1.0.2**（含 Supabase 配置；本机编译多次被中断，需重跑 `assembleRelease`）
-- [ ] 上传 v1.0.2 的 release APK 到 GitHub Release（新建 tag v1.0.2），更新 `update.json`（versionCode=3）
-- [ ] 复制 release APK 到桌面 `C:\Users\Administrator\Desktop\IVAN-CINEMA.apk`
-- [ ] 推送最新源码（Supabase 集成 + release 配置）到 GitHub（上次推送 51 文件成功，之后再改动的需再推）
+- [x] ~~编译并发布 v1.0.2~~ —— **已完成**（2026-10-02，Release ID 401209013，APK 2,909,990 B）
+- [x] ~~上传 v1.0.2 的 release APK 到 GitHub Release~~ —— **已完成**，`update.json` 已指向 v1.0.2（versionCode=3）
+- [x] ~~复制 release APK 到桌面~~ —— **已完成**（sha256 与 Release 资产一致）
+- [x] ~~推送最新源码到 GitHub~~ —— **已完成**（只推了 3 个变化文件，单 commit）
 - [ ] **提醒用户轮换 GitHub token**（已出现在对话记录中）
-- [ ] 真机验收：登录（邮箱+密码）→ 身份位 SVIP → 观看记录同步 → 换源 → 筛选页
+- [ ] 真机验收：登录（邮箱+密码）→ 身份位 SVIP → 观看记录同步 → 换源 → 筛选页 —— **未执行**
 
 ## 七、源码结构速查
 
