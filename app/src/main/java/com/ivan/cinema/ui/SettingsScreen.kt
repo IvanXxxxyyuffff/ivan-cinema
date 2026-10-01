@@ -1,7 +1,5 @@
 package com.ivan.cinema.ui
 
-import android.content.Intent
-import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -21,11 +19,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -35,13 +35,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import com.ivan.cinema.BuildConfig
 import com.ivan.cinema.IVANApp
 import com.ivan.cinema.data.Account
+import com.ivan.cinema.data.ApkState
+import com.ivan.cinema.data.ApkUpdater
 import com.ivan.cinema.data.UpdateChecker
+import com.ivan.cinema.data.UpdateInfo
 import com.ivan.cinema.ui.components.LiquidCard
 import com.ivan.cinema.ui.components.pressDip
 import com.ivan.cinema.ui.theme.LocalIVAN
@@ -64,6 +71,24 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
     var cacheCleared by remember { mutableStateOf(false) }
     var historyCleared by remember { mutableStateOf(false) }
     var showLogout by remember { mutableStateOf(false) }
+    var installArmed by remember { mutableStateOf(false) }
+    val apkState = ApkUpdater.state.value
+
+    // 从「安装未知来源应用」设置页返回后自动继续安装（只自动触发一次）
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME && installArmed) {
+                installArmed = false
+                val s = ApkUpdater.state.value
+                if (s is ApkState.Ready && ApkUpdater.canInstall(ctx)) {
+                    ApkUpdater.install(ctx, s.file)
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     LazyColumn(
         contentPadding = PaddingValues(
@@ -179,66 +204,83 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
             }
         }
 
-        // ── 检查更新 ──
+        // ── 检查更新（应用内下载 + 安装，全程不跳浏览器）──
         item {
             LiquidCard(Modifier.fillMaxWidth(), radius = Radius.lg) {
-                Row(
+                Column(
                     Modifier
                         .fillMaxWidth()
-                        .padding(Space.md + 2.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .padding(Space.md + 2.dp)
                 ) {
-                    Column(Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                "检查更新",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = pal.ink
-                            )
-                            if (update != null) {
-                                Spacer(Modifier.width(Space.sm))
-                                Box(
-                                    Modifier
-                                        .clip(RoundedCornerShape(Radius.sm))
-                                        .background(pal.danger)
-                                        .padding(horizontal = 6.dp, vertical = 2.dp)
-                                ) {
-                                    Text("新版本", fontSize = 10.sp, color = Color.White)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    "检查更新",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = pal.ink
+                                )
+                                if (update != null) {
+                                    Spacer(Modifier.width(Space.sm))
+                                    Box(
+                                        Modifier
+                                            .clip(RoundedCornerShape(Radius.sm))
+                                            .background(pal.danger)
+                                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    ) {
+                                        Text("新版本", fontSize = 10.sp, color = Color.White)
+                                    }
                                 }
                             }
+                            Text(
+                                updateSubtitle(update, apkState, BuildConfig.VERSION_NAME),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (apkState is ApkState.Failed) pal.danger else pal.inkMuted
+                            )
                         }
+                        val checkAction = remember { MutableInteractionSource() }
                         Text(
-                            when {
-                                update != null -> "发现 ${update.versionName}：${update.notes.ifEmpty { "建议更新" }}"
-                                else -> "当前 1.0.0 · 有新版本会在这里提示"
-                            },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = pal.inkMuted
+                            updateActionLabel(update, apkState),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = if (update != null) pal.accentInk else pal.ink,
+                            modifier = Modifier
+                                .pressDip(checkAction, to = 0.94f)
+                                .clip(RoundedCornerShape(Radius.pill))
+                                .background(if (update != null) pal.accent else Color.White.copy(alpha = 0.14f))
+                                .clickable(interactionSource = checkAction, indication = null) {
+                                    when (val s = ApkUpdater.state.value) {
+                                        is ApkState.Downloading -> ApkUpdater.cancel()
+                                        is ApkState.Ready -> {
+                                            if (ApkUpdater.canInstall(ctx)) {
+                                                ApkUpdater.install(ctx, s.file)
+                                            } else {
+                                                installArmed = true
+                                                ApkUpdater.requestInstallPermission(ctx)
+                                            }
+                                        }
+                                        else -> {
+                                            val u = UpdateChecker.latest.value
+                                            if (u != null) ApkUpdater.download(ctx, u.url, u.versionName)
+                                            else UpdateChecker.check(ctx, BuildConfig.VERSION_CODE)
+                                        }
+                                    }
+                                }
+                                .padding(horizontal = Space.md, vertical = Space.sm)
                         )
                     }
-                    val checkAction = remember { MutableInteractionSource() }
-                    Text(
-                        if (update != null) "去更新" else "检查",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = if (update != null) pal.accentInk else pal.ink,
-                        modifier = Modifier
-                            .pressDip(checkAction, to = 0.94f)
-                            .clip(RoundedCornerShape(Radius.pill))
-                            .background(if (update != null) pal.accent else Color.White.copy(alpha = 0.14f))
-                            .clickable(interactionSource = checkAction, indication = null) {
-                                if (update != null && update.url.isNotEmpty()) {
-                                    runCatching {
-                                        ctx.startActivity(
-                                            Intent(Intent.ACTION_VIEW, Uri.parse(update.url))
-                                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                        )
-                                    }
-                                } else {
-                                    UpdateChecker.check(ctx, 1)
-                                }
-                            }
-                            .padding(horizontal = Space.md, vertical = Space.sm)
-                    )
+
+                    if (apkState is ApkState.Downloading) {
+                        Spacer(Modifier.height(Space.sm))
+                        LinearProgressIndicator(
+                            progress = { apkState.progress },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(4.dp)
+                                .clip(RoundedCornerShape(Radius.pill)),
+                            color = pal.accent,
+                            trackColor = Color.White.copy(alpha = 0.14f)
+                        )
+                    }
                 }
             }
         }
@@ -364,3 +406,30 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
         }
     }
 }
+
+/** 更新卡片副标题：下载中显示进度，失败显示原因，其余显示版本信息。 */
+private fun updateSubtitle(update: UpdateInfo?, apk: ApkState, currentVersion: String): String = when {
+    apk is ApkState.Downloading -> {
+        val pct = (apk.progress * 100).toInt()
+        if (apk.total > 0) {
+            "正在下载 $pct%（${apk.received.mb()}/${apk.total.mb()}MB）"
+        } else {
+            "正在下载…已获取 ${apk.received.mb()}MB"
+        }
+    }
+    apk is ApkState.Ready -> "下载完成，点「安装」继续"
+    apk is ApkState.Failed -> "下载失败：${apk.message}"
+    update != null -> "发现 ${update.versionName}：${update.notes.ifEmpty { "建议更新" }}"
+    else -> "当前 $currentVersion · 有新版本会在这里提示"
+}
+
+/** 更新卡片右侧按钮文案：跟随状态机变化。 */
+private fun updateActionLabel(update: UpdateInfo?, apk: ApkState): String = when {
+    apk is ApkState.Downloading -> "取消"
+    apk is ApkState.Ready -> "安装"
+    apk is ApkState.Failed -> "重试"
+    update != null -> "更新"
+    else -> "检查"
+}
+
+private fun Long.mb(): String = String.format("%.1f", this / 1048576.0)

@@ -76,6 +76,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import com.ivan.cinema.IVANApp
+import com.ivan.cinema.data.Account
 import com.ivan.cinema.data.MacCmsApi
 import com.ivan.cinema.data.VodSource
 import com.ivan.cinema.db.AppDb
@@ -92,6 +93,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
 
@@ -198,7 +200,26 @@ class PlayerActivity : ComponentActivity() {
                 .setSeekForwardIncrementMs(30_000)
                 .build()
         }
-        DisposableEffect(Unit) { onDispose { exo.release() } }
+        DisposableEffect(Unit) {
+            onDispose {
+                // 退出播放页：落盘最后进度并强制上云（跳过节流），保证「看到哪」不丢
+                val dur = exo.duration
+                val pos = exo.currentPosition
+                if (vodKey.isNotEmpty() && dur > 0) {
+                    val entry = WatchEntry(
+                        vodKey = vodKey, name = name, year = "", pic = pic,
+                        sourceApi = sourceApi, sourceName = sourceName,
+                        lineIndex = lineIndex, episodeIndex = currentEpisode,
+                        episodeName = "第${currentEpisode + 1}集",
+                        positionMs = pos, durationMs = dur,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                    runBlocking { runCatching { dao.upsert(entry) } }
+                    Account.pushWatch(context, entry, force = true)
+                }
+                exo.release()
+            }
+        }
 
         // ── 构建全部线路：并发拉每个源的详情（换源的底气）──
         LaunchedEffect(vodKey) {
@@ -777,16 +798,17 @@ class PlayerActivity : ComponentActivity() {
         lineIndex: Int, episodeIndex: Int, exo: ExoPlayer
     ) {
         if (vodKey.isEmpty() || exo.duration <= 0) return
-        dao.upsert(
-            WatchEntry(
-                vodKey = vodKey, name = name, year = "", pic = pic,
-                sourceApi = sourceApi, sourceName = sourceName,
-                lineIndex = lineIndex, episodeIndex = episodeIndex,
-                episodeName = "第${episodeIndex + 1}集",
-                positionMs = exo.currentPosition, durationMs = exo.duration,
-                updatedAt = System.currentTimeMillis()
-            )
+        val entry = WatchEntry(
+            vodKey = vodKey, name = name, year = "", pic = pic,
+            sourceApi = sourceApi, sourceName = sourceName,
+            lineIndex = lineIndex, episodeIndex = episodeIndex,
+            episodeName = "第${episodeIndex + 1}集",
+            positionMs = exo.currentPosition, durationMs = exo.duration,
+            updatedAt = System.currentTimeMillis()
         )
+        dao.upsert(entry)
+        // 已登录云端时按 60s 节流上传进度；退出播放页会强制推最后一条
+        Account.pushWatch(this, entry)
     }
 
     private fun fmtTime(ms: Long): String {

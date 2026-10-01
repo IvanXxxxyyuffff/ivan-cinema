@@ -3,6 +3,7 @@ package com.ivan.cinema.data
 import android.content.Context
 import androidx.compose.runtime.mutableStateOf
 import com.ivan.cinema.db.AppDb
+import com.ivan.cinema.db.WatchEntry
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -37,6 +38,12 @@ object Account {
     private const val KEY_SB_USER = "sb_user"
     private const val KEY_SB_TOKEN = "sb_token"
     private const val KEY_SB_UID = "sb_uid"
+
+    /** 进度上云的最小间隔：播放中每 5s 写一次本地，上云按这个节流。 */
+    private const val PUSH_MIN_INTERVAL_MS = 60_000L
+
+    /** 上次上云时间（毫秒）；播放线程与 IO 线程都会读写。 */
+    @Volatile private var lastPushAt = 0L
 
     val state = mutableStateOf<AccountState?>(null)
 
@@ -156,7 +163,29 @@ object Account {
                 runCatching { dao.upsert(r) }
             }
         }
+        lastPushAt = System.currentTimeMillis()
     }
+
+    /**
+     * 播放进度单条上云。
+     *
+     * 播放中每 5 秒就会写一次本地进度，如果每次都打网络会太吵 —— 所以默认
+     * 节流 [minIntervalMs]（60 秒）内只推一条；退出播放页时用 force = true
+     * 兜底推最后一条，保证「看到哪」不丢。
+     */
+    fun pushWatch(ctx: Context, entry: WatchEntry, force: Boolean = false) {
+        val (token, userId) = supabaseSession.value ?: return
+        if (!SupabaseConfig.isConfigured()) return
+        val now = System.currentTimeMillis()
+        if (!force && now - lastPushAt < PUSH_MIN_INTERVAL_MS) return
+        lastPushAt = now
+        CoroutineScope(Dispatchers.IO).launch {
+            runCatching { SupabaseClient.upsertWatch(token, userId, entry) }
+        }
+    }
+
+    /** 当前是否处于云端登录态（决定要不要做同步）。 */
+    fun isCloudLoggedIn(): Boolean = supabaseSession.value != null && SupabaseConfig.isConfigured()
 
     /** Supabase 登录成功：存会话 + 身份位，并后台触发一次同步。 */
     private fun onSupabaseLogin(ctx: Context, user: String, pair: Pair<String, String>) {

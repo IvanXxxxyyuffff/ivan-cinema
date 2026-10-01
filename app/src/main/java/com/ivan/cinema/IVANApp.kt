@@ -8,6 +8,9 @@ import androidx.media3.datasource.cache.SimpleCache
 import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.disk.DiskCache
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import java.io.File
 
 class IVANApp : Application(), ImageLoaderFactory {
@@ -29,6 +32,12 @@ class IVANApp : Application(), ImageLoaderFactory {
         // 本地账号 + 静默检查 APP 更新
         com.ivan.cinema.data.Account.init(this)
         com.ivan.cinema.data.UpdateChecker.check(this, BuildConfig.VERSION_CODE)
+        // 云端登录态：启动即同步一次，换设备后观看记录自动回到本机
+        if (com.ivan.cinema.data.Account.isCloudLoggedIn()) {
+            CoroutineScope(Dispatchers.IO).launch {
+                runCatching { com.ivan.cinema.data.Account.syncWatches(this@IVANApp) }
+            }
+        }
     }
 
     /** 封面加载全局单例：磁盘缓存 + 150ms 交叉淡入 + 高并发连接调度 */
