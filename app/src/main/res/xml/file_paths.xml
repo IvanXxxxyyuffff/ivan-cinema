@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  自更新 APK 的共享路径。
+  ApkUpdater 把安装包下载到 filesDir/apk/，这里只暴露这一个子目录，
+  避免整个私有目录被 FileProvider 对外可见。
+-->
+<paths>
+    <files-path name="apk" path="apk/" />
+</paths>
