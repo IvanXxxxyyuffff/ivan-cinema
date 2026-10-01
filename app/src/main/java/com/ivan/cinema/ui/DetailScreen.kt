@@ -69,29 +69,48 @@ import com.ivan.cinema.ui.theme.accentBrush
 fun DetailScreen(
     merged: MergedVod,
     watchEntry: WatchEntry?,
-    onPlay: (detail: VodDetail, lineIndex: Int, episodeIndex: Int) -> Unit,
+    onPlay: (detail: VodDetail, lineIndex: Int, episodeIndex: Int, hits: List<com.ivan.cinema.data.SourceHit>) -> Unit,
     onDownload: (VodDetail, lineIndex: Int, episodeIndex: Int) -> Unit
 ) {
     val pal = LocalIVAN.current
     var details by remember(merged.key) { mutableStateOf<List<VodDetail>>(emptyList()) }
     var loading by remember(merged.key) { mutableStateOf(true) }
+    var failed by remember(merged.key) { mutableStateOf(false) }
     var selectedLine by remember(merged.key) { mutableStateOf(0) }
     var expanded by remember { mutableStateOf(false) }
+    var reloadKey by remember(merged.key) { mutableStateOf(0) }
 
-    LaunchedEffect(merged.key) {
+    // 补全后的多源命中。必须原样交给播放器 —— 之前播放器拿的是 merged.hits（单源），
+    // 所以详情页显示多条线路、播放页却永远没有「换源」按钮。
+    var resolvedHits by remember(merged.key) {
+        mutableStateOf<List<com.ivan.cinema.data.SourceHit>>(merged.hits)
+    }
+
+    LaunchedEffect(merged.key, reloadKey) {
         loading = true
+        failed = false
         // 单源命中时按片名搜全网补全（否则播放器只有一条线路，脏源无法绕过）
-        val fullHits = if (merged.hits.size < 3) {
-            com.ivan.cinema.data.Aggregator.expandHits(
-                com.ivan.cinema.data.SourceHealth.sources(com.ivan.cinema.IVANApp.ctx()),
-                merged.name,
-                merged.year,
-                merged.hits
-            )
-        } else merged.hits
-        details = Aggregator.fetchDetailAll(fullHits)
-            .filter { it.lines.isNotEmpty() }
-            .sortedByDescending { it.lines.maxOf { l -> l.episodes.size } }
+        val fullHits = runCatching {
+            if (merged.hits.size < 3) {
+                com.ivan.cinema.data.Aggregator.expandHits(
+                    com.ivan.cinema.data.SourceHealth.sources(com.ivan.cinema.IVANApp.ctx()),
+                    merged.name,
+                    merged.year,
+                    merged.hits
+                )
+            } else merged.hits
+        }.getOrDefault(merged.hits)
+        resolvedHits = fullHits
+
+        val fetched = runCatching { Aggregator.fetchDetailAll(fullHits) }
+        if (fetched.isFailure) {
+            failed = true
+            details = emptyList()
+        } else {
+            details = fetched.getOrDefault(emptyList())
+                .filter { it.lines.isNotEmpty() }
+                .sortedByDescending { it.lines.maxOf { l -> l.episodes.size } }
+        }
         loading = false
     }
 
@@ -209,9 +228,9 @@ fun DetailScreen(
                         indication = null
                     ) {
                         val idx = resumeIndex ?: 0
-                        current?.let { onPlay(it, selectedLine, idx) }
+                        current?.let { onPlay(it, selectedLine, idx, resolvedHits) }
                     }
-                    .padding(vertical = Space.md),
+                    .padding(vertical = 13.dp),
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -236,11 +255,35 @@ fun DetailScreen(
 
             if (loading) {
                 Text(
-                    "正在聚合 ${merged.hits.size} 个源的线路…",
+                    "正在聚合 ${resolvedHits.size} 个源的线路…",
                     style = MaterialTheme.typography.bodyMedium,
                     color = pal.inkMuted,
                     modifier = Modifier.padding(Space.lg)
                 )
+            } else if (failed) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = Space.lg, vertical = Space.md),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "线路加载失败，检查网络后重试",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = pal.danger,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        "重试",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = pal.accentInk,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(Radius.pill))
+                            .background(pal.accent)
+                            .clickable { reloadKey++ }
+                            .padding(horizontal = Space.lg, vertical = 15.dp)
+                    )
+                }
             } else if (details.isEmpty()) {
                 EmptyState("各源暂无可用线路")
             } else {
@@ -328,10 +371,10 @@ fun DetailScreen(
                                     .combinedClickable(
                                         interactionSource = interaction,
                                         indication = null,
-                                        onClick = { current?.let { onPlay(it, selectedLine, globalIdx) } },
+                                        onClick = { current?.let { onPlay(it, selectedLine, globalIdx, resolvedHits) } },
                                         onLongClick = { current?.let { onDownload(it, selectedLine, globalIdx) } }
                                     )
-                                    .padding(vertical = Space.sm + 6.dp),
+                                    .padding(vertical = 15.dp),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(

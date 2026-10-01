@@ -55,6 +55,9 @@ fun DownloadScreen(
 ) {
     val pal = LocalIVAN.current
     var items by remember { mutableStateOf<List<Download>>(emptyList()) }
+    // 首次读到下载索引之前 items 必然是空的，直接渲染空态会闪一下
+    // 「还没有下载」，即使其实有任务在跑
+    var loaded by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         DownloadCenter.ensureInit(IVANApp.app)
@@ -70,6 +73,7 @@ fun DownloadScreen(
                     }
                 }
                 items = list
+                loaded = true
             }
             delay(1200)
         }
@@ -116,7 +120,15 @@ fun DownloadScreen(
                 )
             }
         }
-        if (items.isEmpty()) {
+        if (!loaded) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(
+                    "正在读取下载…",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = pal.inkMuted
+                )
+            }
+        } else if (items.isEmpty()) {
             EmptyState("还没有下载", "离线观看", "在详情页长按集数即可加入下载")
         } else {
             LazyColumn(

@@ -146,7 +146,7 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
                                 if (account == null) "登录后可显示身份位与会员标识"
                                 else if (account.isSvip) "会员身份 · 本机有效" else "普通用户",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = pal.inkMuted
+                                color = pal.inkMutedOnGlass
                             )
                         }
                         val action = remember { MutableInteractionSource() }
@@ -163,7 +163,7 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
                                 .clickable(interactionSource = action, indication = null) {
                                     if (account == null) onLogin() else showLogout = !showLogout
                                 }
-                                .padding(horizontal = Space.md, vertical = Space.sm)
+                                .padding(horizontal = Space.md, vertical = 15.dp)
                         )
                     }
                     if (account != null && showLogout) {
@@ -181,13 +181,13 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
                                     .clickable(interactionSource = svipAction, indication = null) {
                                         Account.setSvip(ctx, !account.isSvip)
                                     }
-                                    .padding(horizontal = Space.md, vertical = Space.sm)
+                                    .padding(horizontal = Space.md, vertical = 15.dp)
                             )
                             val logoutAction = remember { MutableInteractionSource() }
                             Text(
                                 "退出登录",
                                 style = MaterialTheme.typography.labelLarge,
-                                color = pal.danger,
+                                color = pal.dangerOnGlass,
                                 modifier = Modifier
                                     .pressDip(logoutAction, to = 0.94f)
                                     .clip(RoundedCornerShape(Radius.pill))
@@ -196,7 +196,7 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
                                         Account.logout(ctx)
                                         showLogout = false
                                     }
-                                    .padding(horizontal = Space.md, vertical = Space.sm)
+                                    .padding(horizontal = Space.md, vertical = 15.dp)
                             )
                         }
                     }
@@ -225,7 +225,8 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
                                     Box(
                                         Modifier
                                             .clip(RoundedCornerShape(Radius.sm))
-                                            .background(pal.danger)
+                                            // 白字压亮红只有 3.4:1，换成深一档的红
+                                            .background(Color(0xFFB04A4A))
                                             .padding(horizontal = 6.dp, vertical = 2.dp)
                                     ) {
                                         Text("新版本", fontSize = 10.sp, color = Color.White)
@@ -265,7 +266,7 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
                                         }
                                     }
                                 }
-                                .padding(horizontal = Space.md, vertical = Space.sm)
+                                .padding(horizontal = Space.md, vertical = 15.dp)
                         )
                     }
 
@@ -299,7 +300,7 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
                         Text(
                             if (MotionPrefs.reduce) "已开启" else "去掉弹簧过冲与级联延迟",
                             style = MaterialTheme.typography.labelSmall,
-                            color = pal.inkMuted
+                            color = pal.inkMutedOnGlass
                         )
                     }
                     Switch(
@@ -333,7 +334,7 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
                         Text(
                             if (cacheCleared) "已清理" else "封面与图片的本地缓存",
                             style = MaterialTheme.typography.labelSmall,
-                            color = pal.inkMuted
+                            color = pal.inkMutedOnGlass
                         )
                     }
                     val clearInteraction = remember { MutableInteractionSource() }
@@ -372,7 +373,7 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
                         Text(
                             if (historyCleared) "已清空" else "记录你搜过的片名",
                             style = MaterialTheme.typography.labelSmall,
-                            color = pal.inkMuted
+                            color = pal.inkMutedOnGlass
                         )
                     }
                     val clearInteraction = remember { MutableInteractionSource() }
@@ -400,7 +401,7 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
             Text(
                 "IVAN CINEMA · 自用版\n数据来自公开采集接口，仅本机使用",
                 style = MaterialTheme.typography.labelSmall,
-                color = pal.inkMuted.copy(alpha = 0.7f),
+                color = pal.inkMutedOnGlass.copy(alpha = 0.7f),
                 modifier = Modifier.padding(vertical = Space.md)
             )
         }

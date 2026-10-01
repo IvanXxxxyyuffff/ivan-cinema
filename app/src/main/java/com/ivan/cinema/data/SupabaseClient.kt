@@ -35,12 +35,24 @@ object SupabaseClient {
 
     // ────────────────────────────── Auth ──────────────────────────────
 
-    /** 注册：POST {URL}/auth/v1/signup。成功返回 userId（或提示语）。 */
-    suspend fun signUp(email: String, password: String): Result<String> = withContext(Dispatchers.IO) {
+    /**
+     * 注册：POST {URL}/auth/v1/signup。成功返回 userId（或提示语）。
+     * [username] 会写进 `data`（即 user_metadata），这样登录后能拿回真实用户名，
+     * 而不是暴露用来登录的合成邮箱。
+     */
+    suspend fun signUp(email: String, password: String, username: String = ""): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
             val body = JSONObject()
                 .put("email", email)
                 .put("password", password)
+                .apply {
+                    if (username.isNotEmpty()) {
+                        put(
+                            "data",
+                            JSONObject().put("username", username).put("display_name", username)
+                        )
+                    }
+                }
                 .toString()
             val req = Request.Builder()
                 .url("${base()}/auth/v1/signup")

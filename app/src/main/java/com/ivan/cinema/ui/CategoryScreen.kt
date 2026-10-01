@@ -56,20 +56,35 @@ fun CategoryScreen(
 ) {
     val pal = LocalIVAN.current
     val ctx = IVANApp.ctx()
-    val sources = remember { com.ivan.cinema.data.SourceHealth.sources(ctx) }
+    // 观察探测结果：原来 remember{} 只读一次且不是快照读，
+    // 启动后台核验完成后「只取前 10 个可信源」的排序在本会话内永远不生效
+    val verified by com.ivan.cinema.data.SourceHealth.verified
+    val sources = remember(verified) { com.ivan.cinema.data.SourceHealth.sources(ctx) }
     var classMap by remember(tab) { mutableStateOf<Map<String, String>>(emptyMap()) }
     var items by remember(tab) { mutableStateOf<List<VodItem>>(emptyList()) }
     var loading by remember(tab) { mutableStateOf(true) }
+    var failed by remember(tab) { mutableStateOf(false) }
     var page by remember(tab) { mutableStateOf(1) }
     var endReached by remember(tab) { mutableStateOf(false) }
+    var reloadKey by remember(tab) { mutableStateOf(0) }
 
-    LaunchedEffect(tab) {
+    LaunchedEffect(tab, reloadKey) {
+        failed = false
+        loading = true
         val cached = ClassCache.read(ctx, tab.name)
-        classMap = if (cached.isNotEmpty()) cached else {
-            val r = Aggregator.resolveClassMap(sources, tab)
-            ClassCache.write(ctx, tab.name, r.tidMap)
-            r.tidMap
+        val resolved = if (cached.isNotEmpty()) cached else {
+            runCatching { Aggregator.resolveClassMap(sources, tab) }.getOrNull()?.tidMap
         }
+        if (resolved.isNullOrEmpty()) {
+            // 原来这里直接 return，loading 永远是 true，界面永久停在骨架屏上，
+            // 既没有失败提示也没有重试入口
+            classMap = emptyMap()
+            failed = true
+            loading = false
+            return@LaunchedEffect
+        }
+        if (cached.isEmpty()) ClassCache.write(ctx, tab.name, resolved)
+        classMap = resolved
     }
 
     LaunchedEffect(classMap, page) {
@@ -130,7 +145,13 @@ fun CategoryScreen(
                 }
             }
         } else if (items.isEmpty()) {
-            EmptyState("该分类暂无内容")
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .clickable { if (failed) reloadKey++ }
+            ) {
+                EmptyState(if (failed) "这个分类暂时打不开，点一下重试" else "该分类暂无内容")
+            }
         } else {
             LazyVerticalGrid(
                 state = gridState,

@@ -12,6 +12,7 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -36,6 +37,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import com.ivan.cinema.data.HomeTab
@@ -127,9 +129,11 @@ class MainActivity : ComponentActivity() {
 
         fun pushPage(p: Page) {
             if (pushAnimating) return
+            // 必须在 launch 之前同步置位：原来在协程内部才置位，
+            // 连点两下时第二次仍能通过守卫，会推入两页
+            pushAnimating = true
             stack.add(p)
             scope.launch {
-                pushAnimating = true
                 push.snapTo(0f)
                 pushState.value = 0f
                 push.animateTo(
@@ -143,8 +147,8 @@ class MainActivity : ComponentActivity() {
 
         fun popPage() {
             if (stack.isEmpty() || pushAnimating) return
+            pushAnimating = true
             scope.launch {
-                pushAnimating = true
                 push.animateTo(
                     targetValue = 0f,
                     animationSpec = tween(200, easing = FastOutLinearInEasing),
@@ -158,10 +162,10 @@ class MainActivity : ComponentActivity() {
         }
 
         fun openSearch() {
-            if (searchOpen) return
+            if (searchOpen || searchAnimating) return
+            searchAnimating = true
             searchOpen = true
             scope.launch {
-                searchAnimating = true
                 portalAnim.animateTo(
                     targetValue = 1f,
                     animationSpec = tween(560, easing = LinearEasing),
@@ -172,9 +176,9 @@ class MainActivity : ComponentActivity() {
         }
 
         fun closeSearch() {
-            if (!searchOpen) return
+            if (!searchOpen || searchAnimating) return
+            searchAnimating = true
             scope.launch {
-                searchAnimating = true
                 portalAnim.animateTo(
                     targetValue = 0f,
                     animationSpec = tween(480, easing = LinearEasing),
@@ -193,13 +197,19 @@ class MainActivity : ComponentActivity() {
             pushPage(Page.Detail(m))
         }
 
-        fun play(detail: VodDetail, lineIndex: Int, episodeIndex: Int) {
+        fun play(
+            detail: VodDetail,
+            lineIndex: Int,
+            episodeIndex: Int,
+            hits: List<com.ivan.cinema.data.SourceHit>
+        ) {
             val topPage = stack.lastOrNull() as? Page.Detail
             val topKey = topPage?.vod?.key
                 ?: com.ivan.cinema.data.Aggregator.mergeKey(detail.name, detail.year)
-            // 把该片命中的全部源一起交给播放器 —— 播放页才能一键换源
+            // 用详情页补全后的 hits 构建线路表 —— 之前用的是列表页那一条单源命中，
+            // 于是详情页显示多条线路、播放页却永远没有「换源」按钮
             val specs = ArrayList<String>()
-            topPage?.vod?.hits?.forEach { hit ->
+            hits.forEach { hit ->
                 specs.add("${hit.source.api}|${hit.source.name}|${hit.vodId}")
             }
             val it = Intent(this, PlayerActivity::class.java)
@@ -223,6 +233,7 @@ class MainActivity : ComponentActivity() {
                 .putExtra("pic", e.pic)
                 .putExtra("sourceApi", e.sourceApi)
                 .putExtra("sourceName", e.sourceName)
+                .putExtra("vodId", e.vodId)
                 .putExtra("lineIndex", e.lineIndex)
                 .putExtra("episodeIndex", e.episodeIndex)
                 .putExtra("resume", true)
@@ -237,9 +248,11 @@ class MainActivity : ComponentActivity() {
             Toast.makeText(this, "已加入下载队列", Toast.LENGTH_SHORT).show()
         }
 
-        // 返回优先级：搜索 → 推入栈 → 放行给系统（栈底再返回 = 退出 APP）
-        BackHandler(enabled = searchOpen) { closeSearch() }
-        BackHandler(enabled = !searchOpen && stack.isNotEmpty()) { popPage() }
+        // 返回优先级：推入页 → 搜索覆盖层 → 放行给系统（栈底再返回 = 退出 APP）
+        // 推入页画在搜索覆盖层之上，所以栈非空时必须先弹栈。原来先判 searchOpen，
+        // 导致「从搜索结果进详情」后按返回关掉的是看不见的搜索层，看起来像返回失灵。
+        BackHandler(enabled = stack.isNotEmpty()) { popPage() }
+        BackHandler(enabled = stack.isEmpty() && searchOpen) { closeSearch() }
 
         Box(Modifier.fillMaxSize()) {
             AmbientPosterBackdrop(ambientPoster)
@@ -294,6 +307,9 @@ class MainActivity : ComponentActivity() {
                         Modifier
                             .fillMaxSize()
                             .graphicsLayer { alpha = portalState.value }
+                            // 覆盖层自己不消费点击，空白处的点按会穿到下面的首页卡片上，
+                            // 表现为「在搜索页点空白，结果打开了某部片」
+                            .pointerInput(Unit) { detectTapGestures { } }
                     ) {
                         SearchScreen(
                             columns = columns,

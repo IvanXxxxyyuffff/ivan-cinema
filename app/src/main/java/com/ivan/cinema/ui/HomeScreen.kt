@@ -85,7 +85,9 @@ fun HomeScreen(
 ) {
     val pal = LocalIVAN.current
     val ctx = IVANApp.ctx()
-    val sources = remember { SourceHealth.sources(ctx) }
+    // 观察探测结果，否则后台核验完成后可信源排序在本会话内不生效
+    val verified by SourceHealth.verified
+    val sources = remember(verified) { SourceHealth.sources(ctx) }
     val watch by AppDb.get(IVANApp.app).watchDao().recent().collectAsState(initial = emptyList())
 
     var tab by remember { mutableStateOf(HomeTab.MOVIE) }
@@ -119,7 +121,9 @@ fun HomeScreen(
 
     val list = items
     val banner = list?.firstOrNull { it.pic.isNotEmpty() }
-    val gridItems = list?.drop(1)?.take(24) ?: emptyList()
+    // 原来是 drop(1).take(24)：既把网格硬砍到 24 条（后面分页全白加载），
+    // 又在首项没有封面时把第 2 条同时当作 banner 和卡片。改成按 key 排除 banner。
+    val gridItems = list?.filter { it !== banner } ?: emptyList()
 
     LazyColumn(
         contentPadding = PaddingValues(bottom = contentBottomPadding),
@@ -161,7 +165,7 @@ fun HomeScreen(
                         Text(
                             "搜索片名",
                             style = MaterialTheme.typography.bodyLarge,
-                            color = pal.inkMuted,
+                            color = pal.inkMutedOnGlass,
                             modifier = Modifier.weight(1f)
                         )
                         Box(
@@ -174,8 +178,11 @@ fun HomeScreen(
                         Text(
                             "筛选",
                             style = MaterialTheme.typography.bodyLarge,
-                            color = pal.inkMuted,
-                            modifier = Modifier.clickable { onFilter() }
+                            color = pal.inkMutedOnGlass,
+                            modifier = Modifier
+                                // 补足点击目标：原来只有文字本身那点高度
+                                .clickable { onFilter() }
+                                .padding(horizontal = 9.dp, vertical = 14.dp)
                         )
                     }
                 }
@@ -199,7 +206,8 @@ fun HomeScreen(
                         modifier = Modifier
                             .clip(RoundedCornerShape(Radius.sm))
                             .clickable { tab = t }
-                            .padding(vertical = Space.xs)
+                            // 14dp 让分类 tab 的点击目标到 48dp
+                            .padding(vertical = 14.dp)
                     )
                 }
             }
@@ -309,7 +317,7 @@ fun HomeScreen(
                             .pressDip(remember { MutableInteractionSource() }, to = 0.94f)
                             .clip(RoundedCornerShape(Radius.pill))
                             .clickable { onMore(tab) }
-                            .padding(horizontal = Space.sm, vertical = Space.xs)
+                            .padding(horizontal = 9.dp, vertical = 15.dp)
                     )
                 }
             }
@@ -348,7 +356,9 @@ fun HomeScreen(
             item(key = "empty") { EmptyState("该分类暂时没有内容") }
         } else {
             items(
-                gridItems.chunked(2),
+                // 用传入的 columns（手机 3 / 平板 6）。原来是硬编码 chunked(2)，
+                // 于是首页只有两列巨卡，跟分类/搜索/筛选页的密度完全不一致
+                gridItems.chunked(columns),
                 key = { row -> row.joinToString("|") { it.source.api + it.vodId } }
             ) { rowItems ->
                 Row(
@@ -364,7 +374,8 @@ fun HomeScreen(
                             onClick = { onOpenDetail(item.toMerged()) }
                         )
                     }
-                    if (rowItems.size == 1) Spacer(Modifier.weight(1f))
+                    // 末行不满时补占位，否则最后一张卡会被拉宽
+                    repeat(columns - rowItems.size) { Spacer(Modifier.weight(1f)) }
                 }
             }
             if (!endReached) {

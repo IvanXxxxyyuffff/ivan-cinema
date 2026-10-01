@@ -67,17 +67,20 @@ object Account {
 
     fun register(ctx: Context, user: String, pass: String): String? {
         val u = user.trim()
+        validateUsername(u)?.let { return it }
+        if (pass.length < 6) return "密码至少 6 位"
 
         if (SupabaseConfig.isConfigured()) {
-            if (!isEmail(u)) return "Supabase 模式下用户名需填邮箱"
-            if (pass.length < 6) return "密码至少 6 位"
-            val up = runBlocking { SupabaseClient.signUp(u, pass) }
-            if (up.isFailure) return up.exceptionOrNull()?.message ?: "注册失败"
+            val email = syntheticEmail(u)
+            val up = runBlocking { SupabaseClient.signUp(email, pass, u) }
+            if (up.isFailure) return friendly(up.exceptionOrNull()?.message) ?: "注册失败"
             // 注册后立刻登录拿会话（若开启了邮箱验证，这里会返回可读提示）
-            val si = runBlocking { SupabaseClient.signIn(u, pass) }
+            val si = runBlocking { SupabaseClient.signIn(email, pass) }
             val pair = si.getOrElse { e ->
-                return e.message ?: "注册成功，但自动登录失败（可能需先完成邮箱验证）"
+                return friendly(e.message)
+                    ?: "注册成功，但自动登录失败（可能需先在 Supabase 关闭邮箱验证）"
             }
+            // 身份位存用户名，不存合成邮箱
             onSupabaseLogin(ctx, u, pair)
             return null
         }
@@ -85,7 +88,7 @@ object Account {
         if (u.length < 2) return "用户名至少 2 个字符"
         if (pass.length < 4) return "密码至少 4 位"
         val p = ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE)
-        if (p.getString(KEY_USER, null) == u) return "这个用户名已经注册过了"
+        if (p.getString(KEY_USER, null).equals(u, ignoreCase = true)) return "这个用户名已经注册过了"
         val salt = java.util.UUID.randomUUID().toString().take(8)
         p.edit()
             .putString(KEY_USER, u)
@@ -99,18 +102,20 @@ object Account {
 
     fun login(ctx: Context, user: String, pass: String): String? {
         val u = user.trim()
+        if (u.isEmpty()) return "请输入用户名"
 
         if (SupabaseConfig.isConfigured()) {
-            if (!isEmail(u)) return "Supabase 模式下用户名需填邮箱"
-            val si = runBlocking { SupabaseClient.signIn(u, pass) }
-            val pair = si.getOrElse { e -> return e.message ?: "登录失败" }
+            // 老账号是用真实邮箱注册的：输入里带 @ 就按邮箱原样登录，避免升级后登不进
+            val email = if (u.contains('@')) u.lowercase() else syntheticEmail(u)
+            val si = runBlocking { SupabaseClient.signIn(email, pass) }
+            val pair = si.getOrElse { e -> return friendly(e.message) ?: "登录失败" }
             onSupabaseLogin(ctx, u, pair)
             return null
         }
 
         val p = ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE)
         val existing = p.getString(KEY_USER, null) ?: return "还没有注册过账号"
-        if (existing != u) return "用户名不对"
+        if (!existing.equals(u, ignoreCase = true)) return "用户名不对"
         val salt = p.getString(KEY_SALT, "") ?: ""
         if (hash(salt + pass) != p.getString(KEY_HASH, "")) return "密码不对"
         state.value = AccountState(existing, p.getBoolean(KEY_SVIP, false))
@@ -200,9 +205,51 @@ object Account {
         CoroutineScope(Dispatchers.IO).launch { runCatching { syncWatches(ctx) } }
     }
 
-    private val EMAIL_RE = Regex("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")
+    /**
+     * 用户名规则：2–20 位，只允许英文、数字与 `.` `_` `-`。
+     *
+     * Supabase Auth 的密码模式协议上必须有 email，所以注册时把用户名映射成
+     * `用户名@ivan-cinema.app` 这个固定域名下的合成地址，用户看到的始终是用户名。
+     */
+    private val USERNAME_RE = Regex("^[A-Za-z0-9._-]{2,20}$")
 
-    private fun isEmail(s: String): Boolean = EMAIL_RE.matches(s)
+    /** 中日韩文字（含假名、谚文），用于给出「不能用中文」的明确提示。 */
+    private val CJK_RE = Regex("[\\u3040-\\u30FF\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uF900-\\uFAFF\\uAC00-\\uD7AF]")
+
+    private const val SYNTH_DOMAIN = "@ivan-cinema.app"
+
+    /** 用户名 → 合成邮箱（统一小写，避免 Ivan / ivan 变成两个账号）。 */
+    fun syntheticEmail(username: String): String =
+        username.trim().lowercase() + SYNTH_DOMAIN
+
+    /** 校验用户名；通过返回 null，否则返回可直接展示给用户的中文提示。 */
+    fun validateUsername(raw: String): String? {
+        val u = raw.trim()
+        if (u.isEmpty()) return "请输入用户名"
+        if (CJK_RE.containsMatchIn(u)) return "用户名不能包含中文，请改用英文、数字或 . _ -"
+        if (u.length < 2) return "用户名至少 2 个字符"
+        if (u.length > 20) return "用户名最多 20 个字符"
+        if (!USERNAME_RE.matches(u)) return "用户名只能用英文、数字或 . _ -，不能有空格"
+        return null
+    }
+
+    /** 把 Supabase 的英文错误翻成能看懂的中文；翻不了就原样返回。 */
+    private fun friendly(msg: String?): String? {
+        val m = msg.orEmpty().trim()
+        if (m.isEmpty()) return null
+        return when {
+            m.contains("already registered", true) || m.contains("already been registered", true) ->
+                "该用户名已被占用，换一个吧"
+            m.contains("Invalid login credentials", true) -> "用户名或密码不对"
+            m.contains("Email not confirmed", true) ->
+                "这个账号需要邮箱验证。请到 Supabase 后台关闭 Confirm email 后再试"
+            m.contains("Password should be at least", true) -> "密码至少 6 位"
+            m.contains("rate limit", true) || m.contains("too many", true) -> "操作太频繁，稍后再试"
+            m.contains("Unable to validate email", true) || m.contains("invalid format", true) ->
+                "用户名格式不被接受，请换一个"
+            else -> m
+        }
+    }
 
     private fun hash(s: String): String {
         val md = MessageDigest.getInstance("SHA-256")

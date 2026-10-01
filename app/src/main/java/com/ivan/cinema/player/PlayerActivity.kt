@@ -184,6 +184,12 @@ class PlayerActivity : ComponentActivity() {
         var playbackError by remember { mutableStateOf<String?>(null) }
         var switchingSource by remember { mutableStateOf(false) }
 
+        // 当前真正生效的源与影片 id：换源后会变，保存观看进度必须用它们，
+        // 否则切过源之后记录里存的还是进来时那一条线路
+        var currentSourceApi by remember { mutableStateOf(sourceApi) }
+        var currentSourceName by remember { mutableStateOf(sourceName) }
+        var currentVodId by remember { mutableStateOf(vodId) }
+
         val dao = remember { AppDb.get(this).watchDao() }
         val audio = remember { getSystemService(Context.AUDIO_SERVICE) as AudioManager }
 
@@ -208,7 +214,8 @@ class PlayerActivity : ComponentActivity() {
                 if (vodKey.isNotEmpty() && dur > 0) {
                     val entry = WatchEntry(
                         vodKey = vodKey, name = name, year = "", pic = pic,
-                        sourceApi = sourceApi, sourceName = sourceName,
+                        sourceApi = currentSourceApi, sourceName = currentSourceName,
+                        vodId = currentVodId,
                         lineIndex = lineIndex, episodeIndex = currentEpisode,
                         episodeName = "第${currentEpisode + 1}集",
                         positionMs = pos, durationMs = dur,
@@ -229,8 +236,21 @@ class PlayerActivity : ComponentActivity() {
                 resolving = false
                 return@LaunchedEffect
             }
+            // 老记录 / 云端同步过来的记录没有 vodId，用片名在该源里回查一次。
+            // 拿空 id 去请求详情只会得到空结果，表现为「继续观看」永远播不了。
+            if (currentVodId.isBlank()) {
+                val found = withContext(Dispatchers.IO) {
+                    runCatching {
+                        MacCmsApi(VodSource(currentSourceName, currentSourceApi))
+                            .search(name)
+                            .firstOrNull { it.vodId.isNotBlank() }
+                            ?.vodId
+                    }.getOrNull()
+                }
+                if (!found.isNullOrBlank()) currentVodId = found
+            }
             val specs = if (sourceSpecs.isNotEmpty()) sourceSpecs
-            else listOf("$sourceApi|$sourceName|$vodId")
+            else listOf("$currentSourceApi|$currentSourceName|$currentVodId")
             val fetched = coroutineScope {
                 specs.map { spec ->
                     async(Dispatchers.IO) {
@@ -246,7 +266,7 @@ class PlayerActivity : ComponentActivity() {
                 }.awaitAll().filterNotNull()
             }
             lines = fetched
-            lineIndex = fetched.indexOfFirst { it.api == sourceApi }.takeIf { it >= 0 } ?: 0
+            lineIndex = fetched.indexOfFirst { it.api == currentSourceApi }.takeIf { it >= 0 } ?: 0
             if (fetched.isEmpty()) {
                 playbackError = "所有线路都拿不到播放地址"
                 resolving = false
@@ -256,12 +276,31 @@ class PlayerActivity : ComponentActivity() {
         LaunchedEffect(lines, lineIndex, currentEpisode) {
             if (!directUrl.isNullOrEmpty()) return@LaunchedEffect
             val line = lines.getOrNull(lineIndex) ?: return@LaunchedEffect
-            val ep = line.episodes.getOrNull(currentEpisode)
-                ?: line.episodes.lastOrNull()
-                ?: return@LaunchedEffect
+            // 原来这里用 `?: return@LaunchedEffect` 静默退出，resolving 永远停在 true，
+            // 界面就卡在「正在解析…」。改成明确的错误态。
+            val ep = line.episodes.getOrNull(currentEpisode) ?: line.episodes.lastOrNull()
+            if (ep == null) {
+                resolving = false
+                isBuffering = false
+                playbackError = "这条线路没有可播放的剧集"
+                return@LaunchedEffect
+            }
             resolving = true
-            resolvedUrl = withContext(Dispatchers.IO) { PlayResolver.resolve(ep.url) }
+            val url = withContext(Dispatchers.IO) { PlayResolver.resolve(ep.url) }
             resolving = false
+            // 解析失败原来会让 resolvedUrl 保持 null，于是既不报错也不播放，
+            // 黑屏卡在「缓冲中…」。这里补上错误态。
+            val oldUrl = resolvedUrl
+            if (url.isNullOrBlank()) {
+                resolvedUrl = null
+                isBuffering = false
+                playbackError = "这条线路解析不出播放地址"
+            } else {
+                resolvedUrl = url
+                // 新源地址与当前相同时 resolvedUrl 不变，监听它的 effect 不会重跑，
+                // switchingSource 会永远停在 true，把「换源」按钮一直藏住
+                if (url == oldUrl) switchingSource = false
+            }
         }
 
         LaunchedEffect(speed) {
@@ -331,7 +370,11 @@ class PlayerActivity : ComponentActivity() {
                     durationMs = exo.duration.coerceAtLeast(0)
                 }
                 if (exo.currentPosition % 5000 < 600 && exo.currentPosition > 0) {
-                    saveProgress(dao, vodKey, name, pic, sourceApi, sourceName, lineIndex, currentEpisode, exo)
+                    saveProgress(
+                        dao, vodKey, name, pic,
+                        currentSourceApi, currentSourceName, currentVodId,
+                        lineIndex, currentEpisode, exo
+                    )
                 }
             }
         }
@@ -368,6 +411,10 @@ class PlayerActivity : ComponentActivity() {
             playbackError = null
             switchingSource = true
             lineIndex = (lineIndex + 1) % lines.size
+            // 记录真正生效的源：保存进度时要用，否则切过源后存的还是进来那一条
+            currentSourceApi = lines[lineIndex].api
+            currentSourceName = lines[lineIndex].name
+            currentVodId = lines[lineIndex].vodId
             // 新源集数可能更少：夹到最后一集
             currentEpisode = keepEp.coerceAtMost((lines[lineIndex].episodes.size - 1).coerceAtLeast(0))
             gestureHint = "已切换线路：${lines[lineIndex].name}"
@@ -534,8 +581,10 @@ class PlayerActivity : ComponentActivity() {
                             contentDescription = "返回",
                             tint = Color.White,
                             modifier = Modifier
-                                .size(24.dp)
+                                // 24dp 的点击目标太小，撑到 48dp（图标仍画 24dp）
+                                .size(48.dp)
                                 .clickable { onExit() }
+                                .padding(12.dp)
                         )
                         Spacer(Modifier.width(Space.md))
                         Text(
@@ -607,7 +656,7 @@ class PlayerActivity : ComponentActivity() {
                                 modifier = Modifier
                                     .weight(1f)
                                     .padding(horizontal = Space.sm)
-                                    .height(28.dp)
+                                    .height(48.dp)
                             )
                             Text(fmtTime(durationMs), style = MetaMono, color = Color.White)
                         }
@@ -630,15 +679,16 @@ class PlayerActivity : ComponentActivity() {
                                 contentDescription = if (fullscreen) "退出全屏" else "全屏",
                                 tint = Color.White,
                                 modifier = Modifier
-                                    .size(26.dp)
+                                    .size(48.dp)
                                     .clickable { fullscreen = !fullscreen }
+                                    .padding(11.dp)
                             )
                         }
                     }
                 }
             }
 
-            if (ended && !controlsVisible) {
+            if (ended && playbackError == null) {
                 Box(
                     Modifier
                         .align(Alignment.Center)
@@ -715,7 +765,7 @@ class PlayerActivity : ComponentActivity() {
                                                 .build()
                                             showSubtitleMenu = false
                                         }
-                                        .padding(horizontal = Space.md, vertical = Space.sm)
+                                        .padding(horizontal = Space.md, vertical = 15.dp)
                                 )
                             }
                         }
@@ -775,7 +825,7 @@ class PlayerActivity : ComponentActivity() {
                                                         showEpisodes = false
                                                         playEpisode(idx)
                                                     }
-                                                    .padding(vertical = Space.sm + 2.dp),
+                                                    .padding(vertical = 15.dp),
                                                 overflow = TextOverflow.Ellipsis,
                                                 textAlign = TextAlign.Center
                                             )
@@ -794,13 +844,13 @@ class PlayerActivity : ComponentActivity() {
     private suspend fun saveProgress(
         dao: com.ivan.cinema.db.WatchDao,
         vodKey: String, name: String, pic: String,
-        sourceApi: String, sourceName: String,
+        sourceApi: String, sourceName: String, vodId: String,
         lineIndex: Int, episodeIndex: Int, exo: ExoPlayer
     ) {
         if (vodKey.isEmpty() || exo.duration <= 0) return
         val entry = WatchEntry(
             vodKey = vodKey, name = name, year = "", pic = pic,
-            sourceApi = sourceApi, sourceName = sourceName,
+            sourceApi = sourceApi, sourceName = sourceName, vodId = vodId,
             lineIndex = lineIndex, episodeIndex = episodeIndex,
             episodeName = "第${episodeIndex + 1}集",
             positionMs = exo.currentPosition, durationMs = exo.duration,
@@ -832,7 +882,7 @@ private fun PlayBarButton(label: String, onClick: () -> Unit) {
         modifier = Modifier
             .clip(RoundedCornerShape(Radius.sm))
             .clickable { onClick() }
-            .padding(horizontal = Space.sm, vertical = Space.xs)
+            .padding(horizontal = 9.dp, vertical = 15.dp)
     )
 }
 

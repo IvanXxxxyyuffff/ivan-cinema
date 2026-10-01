@@ -45,6 +45,16 @@ data class IVANPalette(
     val danger: Color,
     /** 品牌色。只给字标和徽章用，不表示状态。 */
     val brand: Color,
+    /**
+     * 玻璃面上的文字色。
+     *
+     * 玻璃底本身是「白 26% 叠在 canvas 上」，比 canvas 亮得多，
+     * inkMuted / accent / danger 直接放上去只有 2.4–3.7:1，够不到正文 4.5:1。
+     * 这三只是同色相的加亮版本，专供玻璃/卡片面使用。
+     */
+    val inkMutedOnGlass: Color,
+    val accentOnGlass: Color,
+    val dangerOnGlass: Color,
 )
 
 val DarkPalette = IVANPalette(
@@ -59,6 +69,9 @@ val DarkPalette = IVANPalette(
     accentInk = Color(0xFF241C08),
     danger = Color(0xFFD96A6A),
     brand = BrandGold,
+    inkMutedOnGlass = Color(0xFFD5D2DE),
+    accentOnGlass = Color(0xFFE8CE9A),
+    dangerOnGlass = Color(0xFFFFB4B4),
 )
 
 val LightPalette = IVANPalette(
@@ -72,6 +85,9 @@ val LightPalette = IVANPalette(
     accentInk = Color(0xFFFFFFFF),
     danger = Color(0xFFB04A4A),
     brand = Color(0xFF8A6716),
+    inkMutedOnGlass = Color(0xFF57534E),
+    accentOnGlass = Color(0xFF6B5122),
+    dangerOnGlass = Color(0xFF8A2F2F),
 )
 
 /** 全 App 唯一允许的"有色填充"：同色 16% 明度差两档，给体积不给第二色相。 */

@@ -20,6 +20,8 @@ data class WatchEntry(
     val pic: String,
     val sourceApi: String,
     val sourceName: String,
+    /** 源内影片 id。缺了它，「继续观看」无法重建播放地址。仅本地保存。 */
+    val vodId: String = "",
     val lineIndex: Int,
     val episodeIndex: Int,
     val episodeName: String,
@@ -65,7 +67,7 @@ interface WatchDao {
     suspend fun delete(key: String)
 }
 
-@Database(entities = [WatchEntry::class, SearchEntry::class], version = 2, exportSchema = false)
+@Database(entities = [WatchEntry::class, SearchEntry::class], version = 3, exportSchema = false)
 abstract class AppDb : RoomDatabase() {
     abstract fun watchDao(): WatchDao
     abstract fun searchDao(): SearchDao
@@ -74,7 +76,7 @@ abstract class AppDb : RoomDatabase() {
         @Volatile private var inst: AppDb? = null
         fun get(ctx: Context): AppDb = inst ?: synchronized(this) {
             inst ?: Room.databaseBuilder(ctx, AppDb::class.java, "ivan.db")
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .fallbackToDestructiveMigration()
                 .build()
                 .also { inst = it }
@@ -87,6 +89,19 @@ abstract class AppDb : RoomDatabase() {
                     "CREATE TABLE IF NOT EXISTS `search_history` (" +
                         "`keyword` TEXT NOT NULL, `lastUsedAt` INTEGER NOT NULL, " +
                         "PRIMARY KEY(`keyword`))"
+                )
+            }
+        }
+
+        /**
+         * v2 → v3：观看记录补 vodId。
+         * 没有它，「继续观看」只能拿着空 id 去请求详情，必然失败。
+         * 老记录留空字符串，播放页会用片名回查兜底。
+         */
+        private val MIGRATION_2_3 = object : androidx.room.migration.Migration(2, 3) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `watch_history` ADD COLUMN `vodId` TEXT NOT NULL DEFAULT ''"
                 )
             }
         }

@@ -19,10 +19,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Search
@@ -107,6 +109,9 @@ fun SearchScreen(
     var debounceJob by remember { mutableStateOf<Job?>(null) }
     var hotWords by remember { mutableStateOf<List<String>>(emptyList()) }
 
+    // 搜索代次：被取消的旧任务完成时不能把新一轮的 searching 提前置 false
+    val searchGen = remember { java.util.concurrent.atomic.AtomicInteger(0) }
+
     val history by AppDb.get(IVANApp.app).searchDao().recent()
         .collectAsState(initial = emptyList<SearchEntry>())
 
@@ -131,7 +136,7 @@ fun SearchScreen(
         results = LinkedHashMap()
         doneCount = 0
         if (q.isBlank()) return
-        keyboard?.hide()
+        val gen = searchGen.incrementAndGet()
         scope.launch(Dispatchers.IO) {
             AppDb.get(IVANApp.app).searchDao().upsert(
                 SearchEntry(q.trim(), System.currentTimeMillis())
@@ -143,20 +148,18 @@ fun SearchScreen(
             Aggregator.searchAll(sources, q)
                 .onEach { m ->
                     withContext(Dispatchers.Main.immediate) {
-                        val exist = map[m.key]
-                        if (exist == null) {
-                            map[m.key] = m
-                        } else {
-                            exist.hits.clear()
-                            exist.hits.addAll(m.hits)
-                        }
+                        // Aggregator 对同一个 key 重发的始终是同一个实例，且该实例已经
+                        // 累积了全部来源的 hits —— 直接覆盖即可。原实现
+                        // exist.hits.clear(); exist.hits.addAll(m.hits) 在 exist === m
+                        // 时等于清空自己，会让所有多源片子的 hits 全部归零。
+                        map[m.key] = m
                         results = LinkedHashMap(map)
                         doneCount++
                     }
                 }
                 .launchIn(this)
-                .invokeOnCompletion { searching = false }
         }
+        job?.invokeOnCompletion { if (searchGen.get() == gen) searching = false }
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -205,7 +208,12 @@ fun SearchScreen(
                         textStyle = TextStyle(color = pal.ink, fontSize = 15.sp),
                         cursorBrush = SolidColor(pal.accent),
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                        keyboardActions = KeyboardActions(onSearch = { startSearch(query) }),
+                        keyboardActions = KeyboardActions(onSearch = {
+                            // 用户主动回车：取消防抖并收起键盘
+                            debounceJob?.cancel()
+                            keyboard?.hide()
+                            startSearch(query)
+                        }),
                         decorationBox = { inner ->
                             Box(
                                 Modifier.clickable(
@@ -236,15 +244,18 @@ fun SearchScreen(
                             contentDescription = "清空",
                             tint = pal.inkMuted,
                             modifier = Modifier
-                                .size(20.dp)
+                                .size(48.dp)
                                 .clickable {
+                                    // 必须取消防抖：否则清空后 320ms，旧关键词的结果会自己冒出来
+                                    debounceJob?.cancel()
                                     query = ""
                                     results = LinkedHashMap()
                                     job?.cancel()
                                     searching = false
                                 }
+                                .padding(14.dp)
                         )
-                        Spacer(Modifier.width(Space.sm))
+                        Spacer(Modifier.width(Space.xs))
                     }
                 }
             }
@@ -290,14 +301,45 @@ fun SearchScreen(
             // 搜索完成后按命中源数降序（多源都有的片更可靠、更可能是用户要找的）
             if (!searching) l.sortedByDescending { it.hits.size } else l
         }
-        if (list.isEmpty() && !searching) {
+        val hasQuery = query.isNotBlank()
+        if (list.isEmpty() && !searching && hasQuery) {
+            // 搜过了但一条都没命中。原来这种情况会退回「历史/热词」，
+            // 看起来就像搜索根本没生效，所以单独给一个无结果态。
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(bottom = contentBottomPadding),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Spacer(Modifier.height(Space.xxl))
+                Text(
+                    "没有找到「$query」",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = pal.ink
+                )
+                Spacer(Modifier.height(Space.sm))
+                Text(
+                    "换个片名试试，或用「筛选」按分类找",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = pal.inkMutedOnGlass
+                )
+            }
+        } else if (list.isEmpty() && !searching) {
             // ── 历史 / 热门：两列，左列从左进、右列从右进，依次落位 ──
             val entries: List<Pair<String, Boolean>> = if (history.isNotEmpty()) {
                 history.map { it.keyword to true }
             } else {
                 hotWords.map { it to false }
             }
-            Column(Modifier.fillMaxSize()) {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    // 历史最多 20 条（10 行），原来既不能滚动也没有底部留白，
+                    // 会溢出屏幕并被底栏压住
+                    .verticalScroll(rememberScrollState())
+                    .padding(bottom = contentBottomPadding)
+            ) {
                 Text(
                     if (history.isNotEmpty()) "搜索历史" else "热门搜索",
                     style = MaterialTheme.typography.titleMedium,

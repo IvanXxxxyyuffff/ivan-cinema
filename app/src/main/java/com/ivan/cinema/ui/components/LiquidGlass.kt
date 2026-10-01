@@ -258,21 +258,24 @@ fun LiquidNavBar(
                         .clip(RoundedCornerShape(Radius.pill))
                         .background(if (on) Color.White.copy(alpha = 0.16f) else Color.Transparent)
                         .clickable(interactionSource = interaction, indication = null) { onSelect(i) }
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                        // 14dp 让点击目标达到 48dp（原来 8dp 只有 36dp）
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
                     verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(7.dp)
                 ) {
                     androidx.compose.material3.Icon(
                         item.icon,
-                        contentDescription = item.label,
-                        tint = if (on) Color.White else Color.White.copy(alpha = 0.62f),
+                        // 图标已经有常驻文字标签，读屏再念一遍会变成「首页 首页」
+                        contentDescription = null,
+                        tint = if (on) Color.White else Color.White.copy(alpha = 0.80f),
                         modifier = Modifier.height(20.dp)
                     )
                     // 文字常驻（未选中也显示）—— 只显示图标用户认不出哪个是「下载」
                     androidx.compose.material3.Text(
                         item.label,
                         style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
-                        color = if (on) Color.White else Color.White.copy(alpha = 0.62f)
+                        // 0.62 在玻璃上只有 3.6:1，够不到正文 4.5:1
+                        color = if (on) Color.White else Color.White.copy(alpha = 0.80f)
                     )
                 }
             }
