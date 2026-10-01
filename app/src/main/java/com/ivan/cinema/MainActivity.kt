@@ -335,7 +335,14 @@ class MainActivity : ComponentActivity() {
                             is Page.Filter -> FilterScreen(
                                 columns = columns,
                                 onOpenDetail = ::openDetail,
-                                onSearch = ::openSearch
+                                onSearch = {
+                                    // 筛选页在搜索覆盖层之上，直接开搜索会被盖住：
+                                    // 先立即收起筛选页，再打开搜索层
+                                    if (stack.isNotEmpty()) stack.removeAt(stack.lastIndex)
+                                    scope.launch { push.snapTo(1f) }
+                                    pushState.value = 1f
+                                    openSearch()
+                                }
                             )
                             is Page.Login -> LoginScreen(onDone = { popPage() })
                         }
