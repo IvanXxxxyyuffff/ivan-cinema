@@ -1,0 +1,72 @@
+package com.ivan.cinema
+
+import android.app.Application
+import android.content.Context
+import androidx.media3.database.StandaloneDatabaseProvider
+import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
+import androidx.media3.datasource.cache.SimpleCache
+import coil.ImageLoader
+import coil.ImageLoaderFactory
+import coil.disk.DiskCache
+import java.io.File
+
+class IVANApp : Application(), ImageLoaderFactory {
+
+    lateinit var downloadCache: SimpleCache
+        private set
+
+    override fun onCreate() {
+        super.onCreate()
+        app = this
+        val dir = File(cacheDir, "exoplayer_cache")
+        downloadCache = SimpleCache(
+            dir,
+            LeastRecentlyUsedCacheEvictor(4L * 1024 * 1024 * 1024),
+            StandaloneDatabaseProvider(this)
+        )
+        // 启动时静默核验源（后台，不阻塞首屏；24h 内不重复）
+        com.ivan.cinema.data.SourceHealth.init(this)
+        // 本地账号 + 静默检查 APP 更新
+        com.ivan.cinema.data.Account.init(this)
+        com.ivan.cinema.data.UpdateChecker.check(this, 1)
+    }
+
+    /** 封面加载全局单例：磁盘缓存 + 150ms 交叉淡入 + 高并发连接调度 */
+    override fun newImageLoader(): ImageLoader =
+        ImageLoader.Builder(this)
+            .crossfade(150)
+            .callFactory(imageClient)
+            .diskCache {
+                DiskCache.Builder()
+                    .directory(File(cacheDir, "coil_images"))
+                    .maxSizeBytes(256L * 1024 * 1024)
+                    .build()
+            }
+            .memoryCache {
+                coil.memory.MemoryCache.Builder(this)
+                    .maxSizePercent(0.30)
+                    .build()
+            }
+            .respectCacheHeaders(false)
+            .build()
+
+    /** 图床客户端：大并发 + 每 host 8 路 + 连接池复用（冷 DNS 下封面并行铺开）。 */
+    private val imageClient: okhttp3.OkHttpClient by lazy {
+        val dispatcher = okhttp3.Dispatcher().apply {
+            maxRequests = 64
+            maxRequestsPerHost = 8
+        }
+        okhttp3.OkHttpClient.Builder()
+            .dispatcher(dispatcher)
+            .connectTimeout(6, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+            .connectionPool(okhttp3.ConnectionPool(32, 5, java.util.concurrent.TimeUnit.MINUTES))
+            .build()
+    }
+
+    companion object {
+        lateinit var app: IVANApp
+            private set
+        fun ctx(): Context = app
+    }
+}
