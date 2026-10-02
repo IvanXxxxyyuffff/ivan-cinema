@@ -18,8 +18,8 @@ android {
         applicationId = "com.ivan.cinema"
         minSdk = 26
         targetSdk = 34
-        versionCode = 13
-        versionName = "1.0.12"
+        versionCode = 18
+        versionName = "1.0.17"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
