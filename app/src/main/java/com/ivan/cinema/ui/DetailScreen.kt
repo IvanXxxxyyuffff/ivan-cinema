@@ -146,17 +146,17 @@ fun DetailScreen(
         loading = false
     }
 
-    // 播放地址预热：用户还在这一页读简介、挑集数时，就把第一条线路第一集解析好。
+    // 播放地址预热：用户还在这一页读简介、挑集数时，就把前几条线路的第一集解析好。
     //
     // 采集源给的播放地址大多是个**网页**，PlayResolver 要再发 1~2 次 HTTP 才能挖出真 m3u8，
     // 每次最长 10s —— 那一跳就是"点播放要等好几秒"的主因。放在这里预热，
     // 等真进播放页时通常已经命中缓存，用户感觉就是秒开。
+    // 顺带预热第 2、3 条线路（并发、各最多一次请求）：第一条线路解析不出时，
+    // 播放页可以直接切到已经解析好的备线，不必等 ExoPlayer 报错后再串行重解析。
     LaunchedEffect(details) {
-        val firstEp = details.firstOrNull()?.lines?.firstOrNull()?.episodes?.firstOrNull()
-        if (firstEp != null) {
-            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                com.ivan.cinema.player.PlayResolver.warm(firstEp.url)
-            }
+        val lines = details.firstOrNull()?.lines.orEmpty()
+        lines.take(3).forEach { ln ->
+            ln.episodes.firstOrNull()?.url?.let { com.ivan.cinema.player.PlayResolver.warm(it) }
         }
     }
 
