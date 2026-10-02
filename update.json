@@ -1,1 +1,1 @@
-{"versionCode":6,"versionName":"1.0.5","url":"https://github.com/IvanXxxxyyuffff/ivan-cinema/releases/download/v1.0.5/IVAN-CINEMA-v1.0.5.apk","notes":"详情页补返回按钮；下载页空态不再被裁切；底部导航改为不透明渐隐带（内容不再从底栏透出）；首页去掉无信息量的「正片」角标并压暗角标橙色；封面加载改为渐变占位"}
+{"versionCode":7,"versionName":"1.0.6","url":"https://github.com/IvanXxxxyyuffff/ivan-cinema/releases/download/v1.0.6/IVAN-CINEMA-v1.0.6.apk","notes":"观感统一为平面深底 + 实色卡片（去掉全屏模糊海报，解决有的页面玻璃有的不是）；点播放直接全屏；退出播放后有迷你播放条可一键回到原位置；修复缓冲文字与播放按钮重叠；分类/筛选/登录补返回入口；下载行按状态可点、删除需确认；动效与减少动效修复"}
