@@ -1,7 +1,7 @@
 {
-  "version": 1,
+  "version": 2,
   "updated": "2026-10-02",
-  "note": "初始清单：与内置 20 源一致（其中 4 个带 4K电影 分类）",
+  "note": "新增「魔都资源」（实测有国产动漫分类、返回真实 vod_hits、直链 m3u8 可播）。原 20 源中 3 个（新浪/光速/华文等）无动漫分类，另有若干源 vod_hits 恒为 0 —— 未上榜条目在那些源上无法按播放量排序。",
   "list": [
     {
       "name": "新浪资源",
@@ -82,6 +82,10 @@
     {
       "name": "小胡资源",
       "api": "http://c.xiaohu.icu/api.php/provide/vod/"
+    },
+    {
+      "name": "魔都资源",
+      "api": "https://www.mdzyapi.com/api.php/provide/vod/"
     }
   ]
 }
