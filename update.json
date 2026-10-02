@@ -1,1 +1,1 @@
-{"versionCode":31,"versionName":"1.0.30","url":"https://github.com/IvanXxxxyyuffff/ivan-cinema/releases/download/v1.0.30/IVAN-CINEMA-v1.0.30.apk","notes":"①手动选源锁定：手动选了哪条线路就播哪条，播放失败也不会被自动换源切走 ②新增云端策略通道 app_config.json：自动容错上限、补线阈值、手动选源锁定、置顶片名、默认清晰度、DoH 开关、临时禁用某个源（域名片段）都能改仓库文件生效，不用发版；拉不到用缓存、再不行用代码兜底 ③上述参数从硬编码改为读云端配置，默认行为不变。"}
+{"versionCode":32,"versionName":"1.0.31","url":"https://github.com/IvanXxxxyyuffff/ivan-cinema/releases/download/v1.0.31/IVAN-CINEMA-v1.0.31.apk","notes":"云端策略通道的拉取节流从 6 小时改成 15 分钟：这个通道是给「某个源今天突然不通、临时禁用一下」这种当天要生效的事用的，6 小时等于没用。其余与 1.0.30 相同。"}
