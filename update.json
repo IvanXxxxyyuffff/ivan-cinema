@@ -1,1 +1,1 @@
-{"versionCode":9,"versionName":"1.0.8","url":"https://github.com/IvanXxxxyyuffff/ivan-cinema/releases/download/v1.0.8/IVAN-CINEMA-v1.0.8.apk","notes":"线路失效自动换源（最多 3 条，保留进度，界面说明已自动切换）；新增追剧订阅与每日更新提醒（详情页「追剧」按钮 + 设置页「我的追剧」）；新增扫码下载落地页"}
+{"versionCode":10,"versionName":"1.0.9","url":"https://github.com/IvanXxxxyyuffff/ivan-cinema/releases/download/v1.0.9/IVAN-CINEMA-v1.0.9.apk","notes":"首页改为流式加载（不再等最慢的源，首屏从十几秒降到一两秒）；封面补 Referer/UA 与快速失败并新增预取；导航改为 首页/追剧/我的；新增片单收藏；新增共享错误上报（崩溃兜底 + 失败上报，不含任何身份信息）"}
