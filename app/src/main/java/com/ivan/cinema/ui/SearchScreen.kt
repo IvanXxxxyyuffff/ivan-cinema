@@ -70,6 +70,7 @@ import com.ivan.cinema.ui.components.liquidGlass
 import com.ivan.cinema.ui.components.portalIn
 import com.ivan.cinema.ui.components.portalReveal
 import com.ivan.cinema.ui.components.portalRevealProgress
+import com.ivan.cinema.ui.components.press
 import com.ivan.cinema.ui.components.pressDip
 import com.ivan.cinema.ui.theme.LocalIVAN
 import com.ivan.cinema.ui.theme.Radius
@@ -277,7 +278,7 @@ fun SearchScreen(
                 Modifier
                     .fillMaxWidth()
                     .padding(horizontal = Space.lg, vertical = Space.xs)
-                    .pressDip(filterInteraction, to = 0.96f)
+                    .pressDip(filterInteraction, to = press.control)
                     .clip(RoundedCornerShape(Radius.md))
                     .clickable(interactionSource = filterInteraction, indication = null) { onFilter() }
                     .padding(vertical = Space.sm),
@@ -383,7 +384,7 @@ fun SearchScreen(
                                         Row(
                                             Modifier
                                                 .fillMaxWidth()
-                                                .pressDip(wordInteraction, to = 0.96f)
+                                                .pressDip(wordInteraction, to = press.control)
                                                 .liquidGlass(
                                                     RoundedCornerShape(Radius.md),
                                                     DefaultLiquid,
@@ -459,7 +460,7 @@ fun SearchScreen(
                 modifier = Modifier.fillMaxSize()
             ) {
                 itemsIndexed(list, key = { _, it -> it.key }) { index, m ->
-                    StaggerIn(index = index % 12, identity = m.key) {
+                    StaggerIn(index = index, identity = m.key) {
                         PosterCard(item = m, onClick = { onOpenDetail(m) })
                     }
                 }

@@ -1,6 +1,7 @@
 package com.ivan.cinema.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -25,6 +26,7 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -65,7 +67,9 @@ private data class FilterDim(val label: String, val options: List<String>)
 fun FilterScreen(
     columns: Int,
     onOpenDetail: (MergedVod) -> Unit,
-    onSearch: () -> Unit
+    onSearch: () -> Unit,
+    // 底栏在推入页隐藏，本页没有系统返回键以外的出口 —— 必须由调用方接上 popPage()
+    onBack: () -> Unit = {}
 ) {
     val pal = LocalIVAN.current
     val ctx = IVANApp.ctx()
@@ -79,8 +83,10 @@ fun FilterScreen(
 
     var items by remember { mutableStateOf<List<VodItem>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
+    var failed by remember { mutableStateOf(false) }
     var page by remember { mutableStateOf(1) }
     var endReached by remember { mutableStateOf(false) }
+    var reloadKey by remember { mutableStateOf(0) }
 
     val areas = listOf("全部", "内地", "香港", "台湾", "美国", "韩国", "日本", "泰国", "英国", "法国", "印度", "其他")
     val classes = listOf(
@@ -97,27 +103,40 @@ fun FilterScreen(
         items = emptyList()
     }
 
-    // 任一条件变化即重拉
-    LaunchedEffect(tab, area, cls, year, sortBy, page) {
+    // 任一条件变化即重拉。全程 runCatching —— 类目表或请求抛异常时原来 loading 永远是 true，
+    // 骨架屏变成永久假象，既无失败提示也无重试入口。
+    LaunchedEffect(tab, area, cls, year, sortBy, page, reloadKey) {
         if (endReached && page > 1) return@LaunchedEffect
-        val cached = ClassCache.read(ctx, tab.name)
-        val map = if (cached.isNotEmpty()) cached else {
-            val r = Aggregator.resolveClassMap(sources, tab)
-            ClassCache.write(ctx, tab.name, r.tidMap)
-            r.tidMap
-        }
-        if (map.isEmpty()) {
+        loading = true
+        failed = false
+        val map = runCatching {
+            val cached = ClassCache.read(ctx, tab.name)
+            if (cached.isNotEmpty()) cached else {
+                val r = Aggregator.resolveClassMap(sources, tab)
+                ClassCache.write(ctx, tab.name, r.tidMap)
+                r.tidMap
+            }
+        }.getOrNull()
+        if (map.isNullOrEmpty()) {
+            failed = true
             loading = false
             return@LaunchedEffect
         }
-        val fresh = Aggregator.category(
-            sources, map, page,
-            maxSources = 12,
-            by = sortBy,
-            area = area.ifEmpty { null },
-            cls = cls.ifEmpty { null },
-            year = year.ifEmpty { null }
-        )
+        val fresh = runCatching {
+            Aggregator.category(
+                sources, map, page,
+                maxSources = 12,
+                by = sortBy,
+                area = area.ifEmpty { null },
+                cls = cls.ifEmpty { null },
+                year = year.ifEmpty { null }
+            )
+        }.getOrNull()
+        if (fresh == null) {
+            failed = true
+            loading = false
+            return@LaunchedEffect
+        }
         items = if (page == 1) fresh else items + fresh
         loading = false
         if (fresh.isEmpty()) endReached = true
@@ -144,6 +163,25 @@ fun FilterScreen(
                 .padding(horizontal = Space.lg, vertical = Space.md),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // 返回入口：和详情页返回胶囊同款（48dp / 黑 55% / 1px 白描边）
+            val backInteraction = remember { MutableInteractionSource() }
+            Box(
+                Modifier
+                    .padding(end = Space.sm)
+                    .size(48.dp)
+                    .clip(RoundedCornerShape(Radius.pill))
+                    .background(Color.Black.copy(alpha = 0.55f))
+                    .border(1.dp, Color.White.copy(alpha = 0.22f), RoundedCornerShape(Radius.pill))
+                    .clickable(interactionSource = backInteraction, indication = null) { onBack() },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Rounded.ArrowBack,
+                    contentDescription = "返回",
+                    tint = Color.White,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
             Text(
                 "筛选",
                 style = MaterialTheme.typography.headlineSmall,
@@ -211,8 +249,21 @@ fun FilterScreen(
                 }
             }
         } else if (items.isEmpty()) {
-            Box(Modifier.weight(1f)) {
-                EmptyState("这个条件下没有找到内容，换个条件试试")
+            // 失败态整块可点重试（与分类页同一套），不再把异常藏进永久骨架
+            Box(
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .clickable {
+                        if (failed) {
+                            reload()
+                            reloadKey++
+                        }
+                    }
+            ) {
+                EmptyState(
+                    if (failed) "加载失败，点一下重试" else "这个条件下没有找到内容，换个条件试试"
+                )
             }
         } else {
             LazyVerticalGrid(
@@ -233,7 +284,7 @@ fun FilterScreen(
                         pic = item.pic,
                         hits = mutableListOf(SourceHit(item.source, item.vodId, item.remarks))
                     )
-                    StaggerIn(index = index % 12, identity = item.source.api + item.vodId) {
+                    StaggerIn(index = index, identity = item.source.api + item.vodId) {
                         PosterCard(item = merged, onClick = { onOpenDetail(merged) })
                     }
                 }
@@ -283,7 +334,8 @@ private fun FilterRow(
                         .pressDip(interaction, to = 0.94f)
                         .clip(RoundedCornerShape(Radius.pill))
                         .clickable(interactionSource = interaction, indication = null) { onPick(opt) }
-                        .padding(horizontal = Space.sm, vertical = 4.dp)
+                        // bodyLarge 21dp + 14*2 = 49dp，达最小触摸目标（原来 4dp → 29dp）
+                        .padding(horizontal = Space.sm, vertical = 14.dp)
                 )
             }
             item { Spacer(Modifier.width(Space.lg)) }

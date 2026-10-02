@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -57,6 +58,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -81,11 +89,15 @@ import com.ivan.cinema.data.MacCmsApi
 import com.ivan.cinema.data.VodSource
 import com.ivan.cinema.db.AppDb
 import com.ivan.cinema.db.WatchEntry
+import com.ivan.cinema.ui.components.MotionIconSwap
+import com.ivan.cinema.ui.components.MotionTextSwap
 import com.ivan.cinema.ui.theme.IVANTheme
 import com.ivan.cinema.ui.theme.LocalIVAN
 import com.ivan.cinema.ui.theme.MetaMono
 import com.ivan.cinema.ui.theme.Radius
 import com.ivan.cinema.ui.theme.Space
+import com.ivan.cinema.ui.theme.motionExit
+import com.ivan.cinema.ui.theme.motionFade
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -179,7 +191,8 @@ class PlayerActivity : ComponentActivity() {
         var showSpeedMenu by remember { mutableStateOf(false) }
         var showSubtitleMenu by remember { mutableStateOf(false) }
         var hasSubtitle by remember { mutableStateOf(false) }
-        var fullscreen by remember { mutableStateOf(false) }
+        // 点播放即全屏：进入播放页直接横屏 + 沉浸，不用再手动点一次全屏
+        var fullscreen by remember { mutableStateOf(true) }
         var gestureHint by remember { mutableStateOf<String?>(null) }
         var playbackError by remember { mutableStateOf<String?>(null) }
         var switchingSource by remember { mutableStateOf(false) }
@@ -221,8 +234,10 @@ class PlayerActivity : ComponentActivity() {
                         positionMs = pos, durationMs = dur,
                         updatedAt = System.currentTimeMillis()
                     )
-                    runBlocking { runCatching { dao.upsert(entry) } }
+                    runBlocking { runCatching { dao.upsert(Account.stamp(entry)) } }
                     Account.pushWatch(context, entry, force = true)
+                    // 记下「正在播放」，根页据此显示迷你播放条
+                    com.ivan.cinema.data.NowPlaying.update(entry)
                 }
                 exo.release()
             }
@@ -275,7 +290,12 @@ class PlayerActivity : ComponentActivity() {
 
         LaunchedEffect(lines, lineIndex, currentEpisode) {
             if (!directUrl.isNullOrEmpty()) return@LaunchedEffect
-            val line = lines.getOrNull(lineIndex) ?: return@LaunchedEffect
+            val line = lines.getOrNull(lineIndex)
+            if (line == null) {
+                // 换源后若拿不到线路，这次切换尝试已经结束，必须把按钮放出来
+                switchingSource = false
+                return@LaunchedEffect
+            }
             // 原来这里用 `?: return@LaunchedEffect` 静默退出，resolving 永远停在 true，
             // 界面就卡在「正在解析…」。改成明确的错误态。
             val ep = line.episodes.getOrNull(currentEpisode) ?: line.episodes.lastOrNull()
@@ -283,6 +303,7 @@ class PlayerActivity : ComponentActivity() {
                 resolving = false
                 isBuffering = false
                 playbackError = "这条线路没有可播放的剧集"
+                switchingSource = false
                 return@LaunchedEffect
             }
             resolving = true
@@ -295,6 +316,9 @@ class PlayerActivity : ComponentActivity() {
                 resolvedUrl = null
                 isBuffering = false
                 playbackError = "这条线路解析不出播放地址"
+                // 解析失败是「切换尝试已结束」：resolvedUrl 变 null（或本来就是 null）
+                // 都不会让监听它的 effect 跑完清理，必须在这里收尾，否则「换源」永远被藏。
+                switchingSource = false
             } else {
                 resolvedUrl = url
                 // 新源地址与当前相同时 resolvedUrl 不变，监听它的 effect 不会重跑，
@@ -316,7 +340,12 @@ class PlayerActivity : ComponentActivity() {
         }
 
         LaunchedEffect(resolvedUrl) {
-            val url = resolvedUrl ?: return@LaunchedEffect
+            val url = resolvedUrl
+            if (url == null) {
+                // 解析失败会走到这里：本次切换尝试结束，放行「换源」按钮
+                switchingSource = false
+                return@LaunchedEffect
+            }
             val keepPos = if (switchingSource) exo.currentPosition else 0L
             exo.setMediaItem(MediaItem.fromUri(url))
             exo.addListener(object : Player.Listener {
@@ -379,18 +408,26 @@ class PlayerActivity : ComponentActivity() {
             }
         }
 
-        LaunchedEffect(controlsVisible, isPlaying, showEpisodes, showSpeedMenu, showSubtitleMenu) {
-            if (controlsVisible && isPlaying && !showEpisodes && !showSpeedMenu && !showSubtitleMenu) {
+        // 任何交互都重置隐藏计时：拖进度条 / 亮度音量手势中不允许控制层消失
+        LaunchedEffect(
+            controlsVisible, isPlaying, showEpisodes, showSpeedMenu, showSubtitleMenu,
+            dragging, gestureHint
+        ) {
+            if (controlsVisible && isPlaying && !showEpisodes && !showSpeedMenu &&
+                !showSubtitleMenu && !dragging && gestureHint == null
+            ) {
                 delay(4000)
                 controlsVisible = false
             }
         }
 
+        // 手势提示：快进/快退、亮度、音量 1400ms；换源确认 2000ms（要读得完）
+        var hintText by remember { mutableStateOf("") }
         LaunchedEffect(gestureHint) {
-            if (gestureHint != null) {
-                delay(900)
-                gestureHint = null
-            }
+            val hint = gestureHint ?: return@LaunchedEffect
+            hintText = hint
+            delay(if (hint.startsWith("已切换线路")) 2000 else 1400)
+            gestureHint = null
         }
 
         val currentLine = lines.getOrNull(lineIndex)
@@ -424,6 +461,24 @@ class PlayerActivity : ComponentActivity() {
             Modifier
                 .fillMaxSize()
                 .background(Color.Black)
+                // 手势无可见控件：给读屏暴露等价操作，否则这些功能对无障碍用户完全不可用
+                .semantics {
+                    customActions = listOf(
+                        CustomAccessibilityAction(if (isPlaying) "暂停" else "播放") {
+                            if (exo.isPlaying) exo.pause() else exo.play()
+                            gestureHint = if (exo.isPlaying) "播放" else "暂停"
+                            true
+                        },
+                        CustomAccessibilityAction("快进 30 秒") {
+                            exo.seekForward()
+                            true
+                        },
+                        CustomAccessibilityAction("快退 10 秒") {
+                            exo.seekBack()
+                            true
+                        }
+                    )
+                }
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onTap = { controlsVisible = !controlsVisible },
@@ -492,9 +547,12 @@ class PlayerActivity : ComponentActivity() {
                     color = Color.White.copy(alpha = 0.85f),
                     modifier = Modifier
                         .align(Alignment.Center)
+                        // 往下让开中间的播放按钮：原来两者都在正中心，字和图标叠在一起都糊了
+                        .offset(y = 88.dp)
                         .clip(RoundedCornerShape(Radius.sm))
                         .background(Color.Black.copy(alpha = 0.5f))
                         .padding(horizontal = Space.md, vertical = Space.xs + 2.dp)
+                        .semantics { liveRegion = LiveRegionMode.Polite }
                 )
             }
 
@@ -541,15 +599,24 @@ class PlayerActivity : ComponentActivity() {
                 }
             }
 
-            gestureHint?.let { hint ->
+            AnimatedVisibility(
+                visible = gestureHint != null,
+                enter = fadeIn(motionFade(120)),
+                exit = fadeOut(motionExit(100)),
+                modifier = Modifier.align(Alignment.Center)
+            ) {
                 Box(
                     Modifier
-                        .align(Alignment.Center)
                         .clip(RoundedCornerShape(Radius.sm))
                         .background(Color.Black.copy(alpha = 0.62f))
                         .padding(horizontal = Space.lg, vertical = Space.sm)
                 ) {
-                    Text(hint, style = androidx.compose.material3.MaterialTheme.typography.titleMedium, color = Color.White)
+                    Text(
+                        gestureHint ?: hintText,
+                        style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
+                        color = Color.White,
+                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+                    )
                 }
             }
 
@@ -557,8 +624,8 @@ class PlayerActivity : ComponentActivity() {
             // 错误态时不显示（否则中央播放键会压住「重试」按钮）
             AnimatedVisibility(
                 visible = controlsVisible && playbackError == null,
-                enter = fadeIn(androidx.compose.animation.core.tween(180)),
-                exit = fadeOut(androidx.compose.animation.core.tween(150)),
+                enter = fadeIn(motionFade(180)),
+                exit = fadeOut(motionExit(150)),
                 modifier = Modifier.fillMaxSize()
             ) {
                 Box(Modifier.fillMaxSize()) {
@@ -609,19 +676,23 @@ class PlayerActivity : ComponentActivity() {
                         }
                     }
 
-                    // 中央播放/暂停大按钮
-                    Icon(
-                        if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                        contentDescription = if (isPlaying) "暂停" else "播放",
-                        tint = Color.White,
-                        modifier = Modifier
+                    // 中央播放/暂停大按钮（图标 140ms 交叉淡入淡出，不硬切）
+                    Box(
+                        Modifier
                             .align(Alignment.Center)
                             .size(72.dp)
                             .clip(CircleShape)
                             .background(Color.Black.copy(alpha = 0.35f))
-                            .clickable { if (exo.isPlaying) exo.pause() else exo.play() }
-                            .padding(18.dp)
-                    )
+                            .clickable { if (exo.isPlaying) exo.pause() else exo.play() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        MotionIconSwap(
+                            icon = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                            contentDescription = if (isPlaying) "暂停" else "播放",
+                            tint = Color.White,
+                            size = 36.dp
+                        )
+                    }
 
                     // 底部渐变：细进度条 + 时间 + 右侧功能按钮
                     Column(
@@ -657,6 +728,11 @@ class PlayerActivity : ComponentActivity() {
                                     .weight(1f)
                                     .padding(horizontal = Space.sm)
                                     .height(48.dp)
+                                    // 默认读屏只念百分比；补上时间与含义
+                                    .semantics {
+                                        contentDescription = "播放进度"
+                                        stateDescription = fmtTime(if (dragging) dragPos else positionMs)
+                                    }
                             )
                             Text(fmtTime(durationMs), style = MetaMono, color = Color.White)
                         }
@@ -669,8 +745,11 @@ class PlayerActivity : ComponentActivity() {
                             }
                             Spacer(Modifier.weight(1f))
                             PlayBarButton("${speed}x") { showSpeedMenu = true }
-                            Spacer(Modifier.width(Space.lg))
-                            PlayBarButton(if (hasSubtitle) "字幕" else "无字幕") { showSubtitleMenu = true }
+                            // 没有字幕轨时不显示入口：点了只会开出一个死胡同面板
+                            if (hasSubtitle) {
+                                Spacer(Modifier.width(Space.lg))
+                                PlayBarButton("字幕") { showSubtitleMenu = true }
+                            }
                             Spacer(Modifier.width(Space.lg))
                             PlayBarButton("选集") { showEpisodes = true }
                             Spacer(Modifier.width(Space.lg))
@@ -856,7 +935,8 @@ class PlayerActivity : ComponentActivity() {
             positionMs = exo.currentPosition, durationMs = exo.duration,
             updatedAt = System.currentTimeMillis()
         )
-        dao.upsert(entry)
+        dao.upsert(Account.stamp(entry))
+        com.ivan.cinema.data.NowPlaying.update(entry)
         // 已登录云端时按 60s 节流上传进度；退出播放页会强制推最后一条
         Account.pushWatch(this, entry)
     }
@@ -872,11 +952,11 @@ class PlayerActivity : ComponentActivity() {
     }
 }
 
-/** 腾讯视频式文字按钮：无面板，只有白字 + 按压反馈。 */
+/** 腾讯视频式文字按钮：无面板，只有白字 + 按压反馈。文案变化时 150ms 交叉淡化。 */
 @Composable
 private fun PlayBarButton(label: String, onClick: () -> Unit) {
-    Text(
-        label,
+    MotionTextSwap(
+        text = label,
         style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
         color = Color.White,
         modifier = Modifier

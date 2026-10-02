@@ -50,6 +50,18 @@ object Account {
     /** Supabase 会话：accessToken to userId；未登录为 null。 */
     val supabaseSession = mutableStateOf<Pair<String, String>?>(null)
 
+    /**
+     * 未登录（本地账号 / 未配置 Supabase）时观看记录归属的「用户」。
+     * 与 AppDb MIGRATION_3_4 里旧数据回填的字面量保持一致。
+     */
+    const val LOCAL_USER = "local"
+
+    /** 当前观看记录归属：登录后是 Supabase uid，否则 [LOCAL_USER]。 */
+    fun currentUserId(): String = supabaseSession.value?.second ?: LOCAL_USER
+
+    /** 给一条观看记录盖上当前用户 id（写本地库之前调用，避免串号）。 */
+    fun stamp(entry: WatchEntry): WatchEntry = entry.copy(userId = currentUserId())
+
     fun init(ctx: Context) {
         val p = ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE)
         // 优先恢复 Supabase 会话（若存在）
@@ -147,25 +159,29 @@ object Account {
     /**
      * 观看记录双向同步：先把本地 Room 记录 upsert 到云端，再把云端记录拉回来合并。
      * 冲突（同一 vodKey）以 updatedAt 大的为准。失败静默，不影响使用。
+     *
+     * 多账号隔离：本地表是设备级的（主键只有 vodKey），所以上传只挑属于**当前用户**
+     * 的行，拉回的云端行也盖上当前 userId —— 否则一台设备上的多个账号会把彼此的
+     * 观看记录混进同一张本地表。
      */
     suspend fun syncWatches(ctx: Context) {
         val (token, userId) = supabaseSession.value ?: return
         if (!SupabaseConfig.isConfigured()) return
         val dao = AppDb.get(ctx).watchDao()
 
-        // 1) 本地 → 云端
-        val local = runCatching { dao.recent().first() }.getOrDefault(emptyList())
+        // 1) 本地 → 云端：只上传属于当前用户的记录
+        val local = runCatching { dao.recentFor(userId).first() }.getOrDefault(emptyList())
         for (e in local) {
             SupabaseClient.upsertWatch(token, userId, e)
         }
 
-        // 2) 云端 → 本地（按 updatedAt 取新的）
+        // 2) 云端 → 本地：只和当前用户自己的行比新旧，落库时盖上当前 userId
         val remote = SupabaseClient.pullWatches(token, userId)
         for (r in remote) {
             if (r.vodKey.isEmpty()) continue
-            val cur = runCatching { dao.get(r.vodKey) }.getOrNull()
+            val cur = runCatching { dao.getFor(userId, r.vodKey) }.getOrNull()
             if (cur == null || r.updatedAt > cur.updatedAt) {
-                runCatching { dao.upsert(r) }
+                runCatching { dao.upsert(r.copy(userId = userId)) }
             }
         }
         lastPushAt = System.currentTimeMillis()
@@ -184,8 +200,10 @@ object Account {
         val now = System.currentTimeMillis()
         if (!force && now - lastPushAt < PUSH_MIN_INTERVAL_MS) return
         lastPushAt = now
+        // 盖上当前 userId 再上传，保证云端 user_id 与本地归属一致
+        val stamped = entry.copy(userId = userId)
         CoroutineScope(Dispatchers.IO).launch {
-            runCatching { SupabaseClient.upsertWatch(token, userId, entry) }
+            runCatching { SupabaseClient.upsertWatch(token, userId, stamped) }
         }
     }
 

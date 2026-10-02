@@ -39,21 +39,35 @@ import kotlinx.coroutines.delay
 /** 已经播过入场动画的元素标识（全 App 共用一本账）。 */
 private val staggerGate: MutableSet<Any> = mutableSetOf()
 
-private const val STAGGER_MAX_INDEX = 10
+private const val STAGGER_MAX_INDEX = 6
 private const val GATE_CAP = 6000
+
+/**
+ * 按压深度令牌（全 App 只此两档）。
+ *   card    —— 整块卡片 / 海报砖；
+ *   control —— 按钮、胶囊、图标等控件。
+ * pressDip 的默认值即 control；调用点要覆盖时只准从这两档里选。
+ */
+object press {
+    const val card = 0.97f
+    const val control = 0.94f
+}
 
 /**
  * 落位动画：列表元素按索引级联淡入上浮，**只播一次**。
  * 判定依据是 [identity]（稳定标识，例如 source+id），不是下标 ——
  * 滚出去再滚回来不重演，删项导致上移也不重演。
  * 走 graphicsLayer 不走 AnimatedVisibility：位置从第一帧起就是最终位置，零布局抖动。
+ *
+ * [index] 收**原始下标**：内部 clamp 到 [STAGGER_MAX_INDEX]（超出只是不再增加延迟，
+ * 不是取模回卷）—— 调用点若传 `index % 12` 会让级联每 12 项重来一次，多列网格读成一块块涌出。
  */
 @Composable
 fun StaggerIn(
     index: Int,
     modifier: Modifier = Modifier,
     identity: Any? = null,
-    stepMs: Long = 45L,
+    stepMs: Long = 28L,
     content: @Composable () -> Unit,
 ) {
     val reduce = MotionPrefs.reduce
@@ -75,7 +89,7 @@ fun StaggerIn(
     // `p` 用 `=` 不用 `by`：每帧只在绘制期读一次，整段入场零重组。
     val p = androidx.compose.animation.core.animateFloatAsState(
         targetValue = if (visible) 1f else 0f,
-        animationSpec = motionFloat(MotionKind.General),
+        animationSpec = motionFloat(MotionKind.Snappy),
         label = "stagger",
     )
 
@@ -95,7 +109,7 @@ fun StaggerIn(
 @Composable
 fun Modifier.pressDip(
     interaction: MutableInteractionSource,
-    to: Float = 0.97f,
+    to: Float = press.control,
 ): Modifier {
     val pressed by interaction.collectIsPressedAsState()
     val scale by androidx.compose.animation.core.animateFloatAsState(

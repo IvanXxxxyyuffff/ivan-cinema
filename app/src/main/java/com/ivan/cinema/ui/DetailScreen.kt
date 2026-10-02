@@ -2,6 +2,7 @@ package com.ivan.cinema.ui
 
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -24,12 +26,15 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -38,12 +43,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import coil.compose.AsyncImage
+import com.ivan.cinema.IVANApp
 import com.ivan.cinema.data.Aggregator
 import com.ivan.cinema.data.MergedVod
 import com.ivan.cinema.data.VodDetail
@@ -56,6 +68,7 @@ import com.ivan.cinema.ui.theme.LocalIVAN
 import com.ivan.cinema.ui.theme.Radius
 import com.ivan.cinema.ui.theme.Space
 import com.ivan.cinema.ui.theme.accentBrush
+import kotlinx.coroutines.delay
 
 /**
  * 详情页 —— 消费者最需要的三件事按优先级排：
@@ -70,7 +83,8 @@ fun DetailScreen(
     merged: MergedVod,
     watchEntry: WatchEntry?,
     onPlay: (detail: VodDetail, lineIndex: Int, episodeIndex: Int, hits: List<com.ivan.cinema.data.SourceHit>) -> Unit,
-    onDownload: (VodDetail, lineIndex: Int, episodeIndex: Int) -> Unit
+    onDownload: (VodDetail, lineIndex: Int, episodeIndex: Int) -> Unit,
+    onBack: () -> Unit = {}
 ) {
     val pal = LocalIVAN.current
     var details by remember(merged.key) { mutableStateOf<List<VodDetail>>(emptyList()) }
@@ -79,6 +93,9 @@ fun DetailScreen(
     var selectedLine by remember(merged.key) { mutableStateOf(0) }
     var expanded by remember { mutableStateOf(false) }
     var reloadKey by remember(merged.key) { mutableStateOf(0) }
+    // 12s 仍未出结果 → 允许用户不再等，直接试第一个源
+    var slow by remember(merged.key) { mutableStateOf(false) }
+    var firstOnly by remember(merged.key) { mutableStateOf(false) }
 
     // 补全后的多源命中。必须原样交给播放器 —— 之前播放器拿的是 merged.hits（单源），
     // 所以详情页显示多条线路、播放页却永远没有「换源」按钮。
@@ -86,21 +103,25 @@ fun DetailScreen(
         mutableStateOf<List<com.ivan.cinema.data.SourceHit>>(merged.hits)
     }
 
-    LaunchedEffect(merged.key, reloadKey) {
+    LaunchedEffect(merged.key, reloadKey, firstOnly) {
         loading = true
         failed = false
-        // 单源命中时按片名搜全网补全（否则播放器只有一条线路，脏源无法绕过）
+        slow = false
+        // 单源命中时按片名搜全网补全（否则播放器只有一条线路，脏源无法绕过）。
+        // firstOnly（用户点了「先试试第一个源」）时跳过补全，直接用已有命中里的第一条。
         val fullHits = runCatching {
-            if (merged.hits.size < 3) {
+            if (firstOnly) resolvedHits.take(1)
+            else if (merged.hits.size < 3) {
                 com.ivan.cinema.data.Aggregator.expandHits(
-                    com.ivan.cinema.data.SourceHealth.sources(com.ivan.cinema.IVANApp.ctx()),
+                    com.ivan.cinema.data.SourceHealth.sources(IVANApp.ctx()),
                     merged.name,
                     merged.year,
                     merged.hits
                 )
             } else merged.hits
-        }.getOrDefault(merged.hits)
+        }.getOrDefault(if (firstOnly) resolvedHits.take(1) else merged.hits)
         resolvedHits = fullHits
+        if (firstOnly) selectedLine = 0
 
         val fetched = runCatching { Aggregator.fetchDetailAll(fullHits) }
         if (fetched.isFailure) {
@@ -114,9 +135,38 @@ fun DetailScreen(
         loading = false
     }
 
+    // 慢源逃生：12 秒还没回来就换文案并给出「先试试第一个源」
+    LaunchedEffect(merged.key, reloadKey, firstOnly, loading) {
+        if (loading) {
+            delay(12_000)
+            if (loading) slow = true
+        }
+    }
+
+    // ── 观看记录自读 ──
+    // 入参 watchEntry 只由调用方加载一次，播完一集回来仍是旧值（按钮停在旧集、旧集高亮）。
+    // 这里把它当初始值，自己按 key 重读 DB，并在 ON_RESUME 时刷新。
+    val ctx = IVANApp.ctx()
+    var liveEntry by remember(merged.key) { mutableStateOf(watchEntry) }
+    var resumeTick by remember(merged.key) { mutableStateOf(0) }
+    LaunchedEffect(merged.key, resumeTick) {
+        liveEntry = watchEntry
+        runCatching { com.ivan.cinema.db.AppDb.get(ctx).watchDao().get(merged.key) }
+            .getOrNull()
+            ?.let { liveEntry = it }
+    }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, merged.key) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) resumeTick++
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     val current = details.getOrNull(selectedLine) ?: details.firstOrNull()
     val episodes = current?.lines?.firstOrNull()?.episodes ?: emptyList()
-    val resumeIndex = watchEntry?.episodeIndex?.takeIf { it in episodes.indices }
+    val resumeIndex = liveEntry?.episodeIndex?.takeIf { it in episodes.indices }
 
     Box(Modifier.fillMaxSize()) {
         // 高模糊海报背景（不透明，遮住下层）
@@ -127,8 +177,10 @@ fun DetailScreen(
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
         ) {
-            // ── ① 海报大图 + 片名（300dp，底部渐变接住信息）──
-            Box(Modifier.fillMaxWidth().height(320.dp)) {
+            // ── ① 海报大图 + 片名（280dp，底部渐变接住信息）──
+            // clipToBounds：底部元信息列（标题+元信息+评分+导演+主演）总高约 195dp，
+            // 超出 280dp 英雄区时原来会直接画到下面的播放按钮上，必须裁掉。
+            Box(Modifier.fillMaxWidth().height(280.dp).clipToBounds()) {
                 if (merged.pic.isNotEmpty()) {
                     AsyncImage(
                         model = merged.pic,
@@ -137,13 +189,46 @@ fun DetailScreen(
                         modifier = Modifier.fillMaxSize()
                     )
                 }
+                // 顶部压暗：海报可能是亮色，返回按钮和状态栏需要一层底
+                Box(
+                    Modifier
+                        .align(Alignment.TopStart)
+                        .fillMaxWidth()
+                        .height(110.dp)
+                        .background(
+                            Brush.verticalGradient(
+                                0f to Color(0x730C0B10),
+                                0.35f to Color.Transparent
+                            )
+                        )
+                )
+                // 详情页原来没有任何返回入口，只能靠系统返回键 —— 这里补一个
+                Box(
+                    Modifier
+                        .align(Alignment.TopStart)
+                        .statusBarsPadding()
+                        .padding(start = Space.md, top = Space.sm)
+                        .size(48.dp)
+                        .clip(RoundedCornerShape(Radius.pill))
+                        .background(Color.Black.copy(alpha = 0.55f))
+                        .border(1.dp, Color.White.copy(alpha = 0.22f), RoundedCornerShape(Radius.pill))
+                        .clickable { onBack() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Rounded.ArrowBack,
+                        contentDescription = "返回",
+                        tint = Color.White,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
                 Box(
                     Modifier
                         .fillMaxSize()
                         .background(
                             Brush.verticalGradient(
                                 0f to Color(0x330C0B10),
-                                0.60f to Color(0x8C0C0B10),
+                                0.60f to Color(0xB30C0B10),
                                 1f to pal.canvas
                             )
                         )
@@ -158,7 +243,7 @@ fun DetailScreen(
                         merged.name,
                         style = MaterialTheme.typography.displaySmall,
                         color = pal.ink,
-                        maxLines = 2,
+                        maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                     Spacer(Modifier.height(Space.xs + 2.dp))
@@ -170,7 +255,7 @@ fun DetailScreen(
                             current?.remarks?.ifEmpty { null }
                         ).joinToString("  ·  "),
                         style = MaterialTheme.typography.bodyMedium,
-                        color = pal.inkMuted,
+                        color = pal.inkMutedOnGlass,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -189,7 +274,7 @@ fun DetailScreen(
                         Text(
                             "导演 $directorText",
                             style = MaterialTheme.typography.bodySmall,
-                            color = pal.inkMuted,
+                            color = pal.inkMutedOnGlass,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -200,8 +285,8 @@ fun DetailScreen(
                         Text(
                             "主演 $actorText",
                             style = MaterialTheme.typography.bodySmall,
-                            color = pal.inkMuted,
-                            maxLines = 2,
+                            color = pal.inkMutedOnGlass,
+                            maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
@@ -234,17 +319,27 @@ fun DetailScreen(
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    Icons.Rounded.PlayArrow,
-                    contentDescription = null,
-                    tint = if (ready) pal.accentInk else pal.inkMuted,
-                    modifier = Modifier.size(22.dp)
-                )
+                // 聚合中：按钮原地换成同尺寸的转圈，形状/位置不变 —— 读起来是「在干活」，
+                // 而不是一条按不动的灰色死条。
+                if (loading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(22.dp),
+                        color = pal.inkMuted,
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Icon(
+                        Icons.Rounded.PlayArrow,
+                        contentDescription = null,
+                        tint = if (ready) pal.accentInk else pal.inkMuted,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
                 Spacer(Modifier.width(Space.sm))
                 Text(
                     when {
                         !ready -> "正在准备线路…"
-                        resumeIndex != null && watchEntry != null -> "继续观看 · 第${resumeIndex + 1}集"
+                        resumeIndex != null && liveEntry != null -> "继续观看 · 第${resumeIndex + 1}集"
                         episodes.size > 1 -> "播放第 1 集"
                         else -> "立即播放"
                     },
@@ -254,12 +349,68 @@ fun DetailScreen(
             }
 
             if (loading) {
-                Text(
-                    "正在聚合 ${resolvedHits.size} 个源的线路…",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = pal.inkMuted,
-                    modifier = Modifier.padding(Space.lg)
-                )
+                Column(Modifier.fillMaxWidth()) {
+                    Text(
+                        if (slow) "源响应较慢，仍在尝试…"
+                        else "正在聚合 ${resolvedHits.size} 个源的线路…",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = pal.inkMutedOnGlass,
+                        modifier = Modifier.padding(horizontal = Space.lg, vertical = Space.md)
+                    )
+                    if (slow) {
+                        val escInteraction = remember { MutableInteractionSource() }
+                        Text(
+                            "先试试第一个源",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = pal.accentInk,
+                            modifier = Modifier
+                                .padding(horizontal = Space.lg)
+                                .pressDip(escInteraction, to = 0.95f)
+                                .clip(RoundedCornerShape(Radius.pill))
+                                .background(pal.accent)
+                                .clickable(interactionSource = escInteraction, indication = null) {
+                                    firstOnly = true
+                                }
+                                .padding(horizontal = Space.lg, vertical = 15.dp)
+                        )
+                    }
+
+                    // 骨架：结构先立住，页面不再是一片空白（选集 8 格 + 简介卡）
+                    Spacer(Modifier.height(Space.block))
+                    Text(
+                        "选集",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = pal.ink.copy(alpha = 0.35f),
+                        modifier = Modifier.padding(horizontal = Space.lg, vertical = Space.sm)
+                    )
+                    repeat(2) {
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = Space.lg, vertical = Space.xs),
+                            horizontalArrangement = Arrangement.spacedBy(Space.sm)
+                        ) {
+                            repeat(4) {
+                                Box(
+                                    Modifier
+                                        .weight(1f)
+                                        .height(48.dp)
+                                        .clip(RoundedCornerShape(Radius.sm + 2.dp))
+                                        .background(pal.surfaceRaised.copy(alpha = 0.55f))
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(Space.block))
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = Space.lg)
+                            .height(132.dp)
+                            .clip(RoundedCornerShape(Radius.lg))
+                            .background(pal.surfaceRaised.copy(alpha = 0.45f))
+                    )
+                }
             } else if (failed) {
                 Row(
                     Modifier
@@ -280,12 +431,34 @@ fun DetailScreen(
                         modifier = Modifier
                             .clip(RoundedCornerShape(Radius.pill))
                             .background(pal.accent)
-                            .clickable { reloadKey++ }
+                            .clickable {
+                                firstOnly = false
+                                reloadKey++
+                            }
                             .padding(horizontal = Space.lg, vertical = 15.dp)
                     )
                 }
             } else if (details.isEmpty()) {
-                EmptyState("各源暂无可用线路")
+                // 空态原来没有任何出口 —— 补一个和失败分支一致的重试
+                Column(Modifier.fillMaxWidth()) {
+                    EmptyState("各源暂无可用线路")
+                    val emptyRetry = remember { MutableInteractionSource() }
+                    Text(
+                        "重试",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = pal.accentInk,
+                        modifier = Modifier
+                            .align(Alignment.CenterHorizontally)
+                            .pressDip(emptyRetry, to = 0.95f)
+                            .clip(RoundedCornerShape(Radius.pill))
+                            .background(pal.accent)
+                            .clickable(interactionSource = emptyRetry, indication = null) {
+                                firstOnly = false
+                                reloadKey++
+                            }
+                            .padding(horizontal = Space.lg, vertical = 15.dp)
+                    )
+                }
             } else {
                 // ── ③ 线路切换 ──
                 if (details.size > 1) {
@@ -301,23 +474,25 @@ fun DetailScreen(
                         horizontalArrangement = Arrangement.spacedBy(Space.sm)
                     ) {
                         itemsIndexed(details) { i, d ->
-                            val selected = i == selectedLine
+                            val isSelected = i == selectedLine
                             val interaction = remember { MutableInteractionSource() }
                             Text(
                                 "${d.source.name} · ${d.lines.firstOrNull()?.episodes?.size ?: 0}集",
                                 style = MaterialTheme.typography.labelLarge,
-                                color = if (selected) pal.accentInk else pal.ink,
+                                color = if (isSelected) pal.accentInk else pal.ink,
                                 modifier = Modifier
                                     .pressDip(interaction, to = 0.95f)
                                     .clip(RoundedCornerShape(Radius.pill))
                                     .background(
-                                        if (selected) accentBrush(pal)
+                                        if (isSelected) accentBrush(pal)
                                         else com.ivan.cinema.ui.theme.SolidColorBrushCompat(Color.White.copy(alpha = 0.10f))
                                     )
                                     .clickable(interactionSource = interaction, indication = null) {
                                         selectedLine = i
                                     }
-                                    .padding(horizontal = Space.md, vertical = 10.dp)
+                                    .semantics { selected = isSelected }
+                                    // labelLarge 18dp + 15*2 = 48dp，达最小触摸目标
+                                    .padding(horizontal = Space.md, vertical = 15.dp)
                             )
                         }
                     }
@@ -355,9 +530,11 @@ fun DetailScreen(
                     ) {
                         rowEps.forEachIndexed { col, ep ->
                             val globalIdx = if (episodes.size == 1) 0 else rowIdx * 4 + col
-                            val isCurrent = watchEntry != null &&
-                                watchEntry.episodeIndex == globalIdx &&
-                                watchEntry.sourceApi == current?.source?.api
+                            // liveEntry 是委托属性，不能直接智能转换，先取到局部变量
+                            val we = liveEntry
+                            val isCurrent = we != null &&
+                                we.episodeIndex == globalIdx &&
+                                we.sourceApi == current?.source?.api
                             val interaction = remember { MutableInteractionSource() }
                             Box(
                                 Modifier
@@ -374,6 +551,8 @@ fun DetailScreen(
                                         onClick = { current?.let { onPlay(it, selectedLine, globalIdx, resolvedHits) } },
                                         onLongClick = { current?.let { onDownload(it, selectedLine, globalIdx) } }
                                     )
+                                    .semantics { selected = isCurrent }
+                                    // labelLarge 18dp + 15*2 = 48dp，达最小触摸目标
                                     .padding(vertical = 15.dp),
                                 contentAlignment = Alignment.Center
                             ) {

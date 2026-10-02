@@ -130,6 +130,82 @@ object SupabaseClient {
             }.getOrElse { emptyList() }
         }
 
+    // ─────────────────────────── 共享源健康 ───────────────────────────
+
+    /**
+     * 上报一次探测结果：把可用 / 不可用的源分别原子自增 ok / fail。
+     *
+     * 走 RPC `report_source_health`（见 docs/supabase.sql），因为 PostgREST 的
+     * upsert 只能整行替换、做不了 `ok = ok + 1`，自增必须放在数据库侧，
+     * 否则多端并发会互相覆盖计数。失败一律包 Result，绝不抛给调用方。
+     */
+    suspend fun upsertSourceHealth(token: String, results: Map<String, Boolean>): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val ok = JSONArray()
+                val fail = JSONArray()
+                results.forEach { (api, alive) ->
+                    if (api.isNotEmpty()) (if (alive) ok else fail).put(api)
+                }
+                if (ok.length() == 0 && fail.length() == 0) return@runCatching Unit
+                val body = JSONObject()
+                    .put("ok_apis", ok)
+                    .put("fail_apis", fail)
+                    .toString()
+                val req = Request.Builder()
+                    .url("${base()}/rest/v1/rpc/report_source_health")
+                    .header("apikey", key())
+                    .header("Authorization", "Bearer $token")
+                    .header("Content-Type", "application/json")
+                    .post(body.toRequestBody(JSON))
+                    .build()
+                send(req)
+                Unit
+            }
+        }
+
+    /**
+     * 上报一次播放失败：对 (源, 片) 计数 +1。走 RPC `bump_play_failure`（原子自增）。
+     * 设计为 fire-and-forget 安全：失败静默，调用方无需处理。
+     */
+    suspend fun bumpPlayFailure(token: String, sourceApi: String, vodKey: String): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val body = JSONObject()
+                    .put("p_source_api", sourceApi)
+                    .put("p_vod_key", vodKey)
+                    .toString()
+                val req = Request.Builder()
+                    .url("${base()}/rest/v1/rpc/bump_play_failure")
+                    .header("apikey", key())
+                    .header("Authorization", "Bearer $token")
+                    .header("Content-Type", "application/json")
+                    .post(body.toRequestBody(JSON))
+                    .build()
+                send(req)
+                Unit
+            }
+        }
+
+    /** 拉取所有源的共享健康聚合：GET {URL}/rest/v1/source_health?select=*。失败返回空表。 */
+    suspend fun pullSourceHealth(token: String): List<SourceStat> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val req = Request.Builder()
+                    .url("${base()}/rest/v1/source_health?select=*")
+                    .header("apikey", key())
+                    .header("Authorization", "Bearer $token")
+                    .get()
+                    .build()
+                val text = send(req).trim()
+                if (text.isEmpty() || text == "[]") emptyList()
+                else {
+                    val arr = JSONArray(text)
+                    (0 until arr.length()).map { arr.getJSONObject(it).toSourceStat() }
+                }
+            }.getOrElse { emptyList() }
+        }
+
     // ────────────────────────────── 内部 ──────────────────────────────
 
     /** 执行请求；非 2xx 抛出带可读信息的异常，成功返回响应体。 */
@@ -185,5 +261,13 @@ object SupabaseClient {
         positionMs = optLong("position_ms", 0L),
         durationMs = optLong("duration_ms", 0L),
         updatedAt = optLong("updated_at", 0L)
+    )
+
+    private fun JSONObject.toSourceStat(): SourceStat = SourceStat(
+        sourceApi = optString("source_api", ""),
+        ok = optInt("ok", 0),
+        fail = optInt("fail", 0),
+        lastOk = optLong("last_ok", 0L),
+        lastFail = optLong("last_fail", 0L)
     )
 }

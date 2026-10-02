@@ -29,6 +29,7 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.ivan.cinema.ui.theme.LocalIVAN
 import com.ivan.cinema.ui.theme.Radius
 import kotlin.math.PI
 import kotlin.math.cos
@@ -98,67 +99,66 @@ private fun blendSteps(a: Color, b: Color, steps: Int = 12): List<Color> =
     }
 
 /**
- * 液态玻璃面板。
- * [elevated] 打开外投影（浮起元素：导航、搜索框、播放控制）；静态内容卡可关掉省渲染。
+ * 卡片面。
+ *
+ * 原来是半透明「液态玻璃」，但整体观感改成平面深底之后，玻璃就没有可折射的东西了 ——
+ * 必然退化成一块灰板（本文件开头那句「玻璃底下必须有内容」说的就是这个）。
+ * 而且各页有的用玻璃、有的用实色，体验是割裂的。
+ *
+ * 现在统一成**不透明实色面 + 1px 顶亮描边**，和腾讯视频/爱奇艺的卡片一致：
+ * 文字对比度由设计系统决定，不再随背景内容浮动。
+ *
+ * [elevated] 保留外投影（浮起元素：底栏、搜索框）；[fill] 可换底色（底栏比卡片亮一档）。
  */
 @Composable
 fun Modifier.liquidGlass(
     shape: Shape,
     params: LiquidParams = DefaultLiquid,
     elevated: Boolean = true,
-): Modifier = this
-    .drawBehind {
-        // ⓪ 外投影：柔和暗影（渐变淡出，非实心轮廓 —— 面板透明不会透出方片）
-        if (elevated) {
-            val grow = 14.dp.toPx()
-            val brush = Brush.verticalGradient(
-                listOf(params.dropShadow, Color.Transparent),
-                startY = 0f,
-                endY = size.height + grow
-            )
-            drawRoundRect(
-                brush = brush,
-                topLeft = Offset(-grow * 0.4f, grow * 0.35f),
-                size = Size(size.width + grow * 0.8f, size.height + grow),
-                cornerRadius = CornerRadius(28.dp.toPx())
-            )
+    fill: Color? = null,
+    bordered: Boolean = true,
+): Modifier {
+    val pal = LocalIVAN.current
+    val base = fill ?: pal.surface
+    return this
+        // ⓪ 外投影：只在浮起元素上（在 clip 之前画，才能落到形状外面）
+        .drawBehind {
+            if (elevated) {
+                val grow = 14.dp.toPx()
+                val brush = Brush.verticalGradient(
+                    listOf(params.dropShadow, Color.Transparent),
+                    startY = 0f,
+                    endY = size.height + grow
+                )
+                drawRoundRect(
+                    brush = brush,
+                    topLeft = Offset(-grow * 0.4f, grow * 0.35f),
+                    size = Size(size.width + grow * 0.8f, size.height + grow),
+                    cornerRadius = CornerRadius(28.dp.toPx())
+                )
+            }
         }
-    }
-    .clip(shape)
-    // ① 本体
-    .background(Brush.verticalGradient(blendSteps(params.bodyTop, params.bodyBottom)))
-    // ④ 内阴影：底边内侧一道暗
-    .drawWithCache {
-        val inner = Brush.verticalGradient(
-            0f to Color.Transparent,
-            0.78f to Color.Transparent,
-            1f to params.innerShadow
-        )
-        onDrawBehind { drawRect(inner) }
-    }
-    // ② 高光：左上斜向光斑
-    .drawWithCache {
-        val r = size.minDimension * 0.75f
-        val main = Brush.radialGradient(
-            colors = fadeSteps(params.sheen),
-            center = Offset(size.width * 0.12f, -r * 0.25f),
-            radius = r
-        )
-        onDrawBehind { drawRect(main) }
-    }
-    // ③ 边缘折射描边
-    .drawWithCache {
-        val stroke = Brush.verticalGradient(blendSteps(params.edgeHi, params.edgeLo))
-        onDrawBehind {
-            drawRoundRect(
-                brush = stroke,
-                topLeft = Offset(0.5f, 0.5f),
-                size = Size(size.width - 1f, size.height - 1f),
-                cornerRadius = CornerRadius(24.dp.toPx()),
-                style = Stroke(width = 1.dp.toPx())
+        .clip(shape)
+        // ① 本体：实色
+        .background(base)
+        // ② 边缘：顶部一道亮线，底部略暗，给出厚度感
+        .drawWithCache {
+            if (!bordered) return@drawWithCache onDrawBehind { }
+            val stroke = Brush.verticalGradient(
+                0f to Color.White.copy(alpha = 0.12f),
+                1f to Color.White.copy(alpha = 0.03f)
             )
+            onDrawBehind {
+                drawRoundRect(
+                    brush = stroke,
+                    topLeft = Offset(0.5f, 0.5f),
+                    size = Size(size.width - 1f, size.height - 1f),
+                    cornerRadius = CornerRadius(24.dp.toPx()),
+                    style = Stroke(width = 1.dp.toPx())
+                )
+            }
         }
-    }
+}
 
 /** 顶边 1px 亮线（贴在内容之上画）。 */
 @Composable
@@ -201,15 +201,23 @@ fun LiquidPill(
 ) {
     val shape = remember { RoundedCornerShape(Radius.pill) }
     val interaction = remember { MutableInteractionSource() }
+    val pal = LocalIVAN.current
     Row(
         modifier
             .then(
                 if (onClick == null) Modifier
                 else Modifier
-                    .pressDip(interaction, to = 0.96f)
+                    .pressDip(interaction, to = press.control)
                     .clickable(interactionSource = interaction, indication = null, onClick = onClick)
             )
-            .liquidGlass(shape, if (selected) ImmersiveLiquid else DefaultLiquid, elevated = false)
+            .liquidGlass(
+                shape,
+                if (selected) ImmersiveLiquid else DefaultLiquid,
+                elevated = false,
+                // 未选中的胶囊必须完全透明，否则底栏会变成一排实心方块
+                fill = if (selected) pal.surfaceRaised else Color.Transparent,
+                bordered = selected
+            )
             .padding(horizontal = 16.dp, vertical = 9.dp),
         verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center,
@@ -217,23 +225,24 @@ fun LiquidPill(
     )
 }
 
-/** 液态玻璃横条（搜索框、顶栏）。 */
+/** 横条（搜索框、顶栏）。 */
 @Composable
 fun LiquidBar(
     modifier: Modifier = Modifier,
     radius: Dp = Radius.pill,
     elevated: Boolean = true,
     params: LiquidParams = DefaultLiquid,
+    fill: Color? = null,
     content: @Composable BoxScope.() -> Unit,
 ) {
     val shape = remember(radius) { RoundedCornerShape(radius) }
-    Box(modifier.liquidGlass(shape, params, elevated)) {
+    Box(modifier.liquidGlass(shape, params, elevated, fill)) {
         GlassTopLine(params)
         content()
     }
 }
 
-/** 悬浮胶囊导航底栏：图标 + 标签，选中项有液态高亮底。 */
+/** 悬浮胶囊导航底栏：图标 + 标签，选中项有一档更亮的底。 */
 @Composable
 fun LiquidNavBar(
     modifier: Modifier = Modifier,
@@ -241,7 +250,15 @@ fun LiquidNavBar(
     selected: Int,
     onSelect: (Int) -> Unit,
 ) {
-    LiquidBar(modifier = modifier, radius = Radius.pill, elevated = true, params = NavLiquid) {
+    val pal = LocalIVAN.current
+    LiquidBar(
+        modifier = modifier,
+        radius = Radius.pill,
+        elevated = true,
+        params = NavLiquid,
+        // 底栏比普通卡片亮一档，才能在平面深底上「浮」起来
+        fill = pal.surfaceRaised
+    ) {
         Row(
             Modifier
                 .fillMaxWidth()

@@ -45,6 +45,9 @@ class IVANApp : Application(), ImageLoaderFactory {
         ImageLoader.Builder(this)
             .crossfade(150)
             .callFactory(imageClient)
+            // 关掉硬件位图：硬件 Bitmap 无法被软件 Canvas 绘制，
+            // 会让 captureToImage() 截出来的海报全是空白，同时也影响 App 自身的模糊处理
+            .allowHardware(false)
             .diskCache {
                 DiskCache.Builder()
                     .directory(File(cacheDir, "coil_images"))

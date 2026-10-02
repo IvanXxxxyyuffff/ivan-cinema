@@ -27,7 +27,12 @@ data class WatchEntry(
     val episodeName: String,
     val positionMs: Long,
     val durationMs: Long,
-    val updatedAt: Long
+    val updatedAt: Long,
+    /**
+     * 归属用户：登录时是 Supabase uid，未登录是 Account.LOCAL_USER（"local"）。
+     * 同一台设备上多账号时靠它隔离「继续观看」。
+     */
+    val userId: String = ""
 )
 
 /** 搜索历史：关键词去重，按最近使用排序。 */
@@ -60,14 +65,25 @@ interface WatchDao {
     @Query("SELECT * FROM watch_history ORDER BY updatedAt DESC LIMIT 30")
     fun recent(): Flow<List<WatchEntry>>
 
+    /**
+     * 只读当前用户的历史（「继续观看」应改用这个）。
+     * [recent] 是设备级的旧接口，会串到其他账号，仅作兼容保留。
+     */
+    @Query("SELECT * FROM watch_history WHERE userId = :userId ORDER BY updatedAt DESC LIMIT 30")
+    fun recentFor(userId: String): Flow<List<WatchEntry>>
+
     @Query("SELECT * FROM watch_history WHERE vodKey = :key LIMIT 1")
     suspend fun get(key: String): WatchEntry?
+
+    /** 只取属于该用户的记录，避免换账号后读到别人的进度。 */
+    @Query("SELECT * FROM watch_history WHERE userId = :userId AND vodKey = :key LIMIT 1")
+    suspend fun getFor(userId: String, key: String): WatchEntry?
 
     @Query("DELETE FROM watch_history WHERE vodKey = :key")
     suspend fun delete(key: String)
 }
 
-@Database(entities = [WatchEntry::class, SearchEntry::class], version = 3, exportSchema = false)
+@Database(entities = [WatchEntry::class, SearchEntry::class], version = 4, exportSchema = false)
 abstract class AppDb : RoomDatabase() {
     abstract fun watchDao(): WatchDao
     abstract fun searchDao(): SearchDao
@@ -76,7 +92,7 @@ abstract class AppDb : RoomDatabase() {
         @Volatile private var inst: AppDb? = null
         fun get(ctx: Context): AppDb = inst ?: synchronized(this) {
             inst ?: Room.databaseBuilder(ctx, AppDb::class.java, "ivan.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .fallbackToDestructiveMigration()
                 .build()
                 .also { inst = it }
@@ -102,6 +118,22 @@ abstract class AppDb : RoomDatabase() {
             override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
                 db.execSQL(
                     "ALTER TABLE `watch_history` ADD COLUMN `vodId` TEXT NOT NULL DEFAULT ''"
+                )
+            }
+        }
+
+        /**
+         * v3 → v4：观看记录补 userId，实现同一台设备上多账号历史隔离。
+         * 旧数据没有归属，统一回填给本地用户（Account.LOCAL_USER = "local"），
+         * 否则升级后这些记录既不属于任何账号，「继续观看」会凭空消失。
+         */
+        private val MIGRATION_3_4 = object : androidx.room.migration.Migration(3, 4) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `watch_history` ADD COLUMN `userId` TEXT NOT NULL DEFAULT ''"
+                )
+                db.execSQL(
+                    "UPDATE `watch_history` SET `userId` = 'local' WHERE `userId` = ''"
                 )
             }
         }

@@ -203,7 +203,7 @@ fun GlassPill(
             .then(
                 if (onClick == null) Modifier
                 else Modifier
-                    .pressDip(interaction, to = 0.96f)
+                    .pressDip(interaction, to = press.control)
                     .clickable(interactionSource = interaction, indication = null, onClick = onClick)
             )
             .clip(shape)
@@ -332,8 +332,10 @@ fun EmptyState(
     Column(
         modifier
             .fillMaxWidth()
-            .padding(vertical = Space.xl)
+            // 原来没有横向内边距、且左对齐，在下载页会顶到屏幕左缘并被裁掉半个图标
+            .padding(horizontal = Space.xl, vertical = Space.xl)
             .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier),
+        horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
     ) {
         Box(
             Modifier
@@ -346,11 +348,26 @@ fun EmptyState(
                 ),
         )
         Spacer(Modifier.height(Space.md))
-        Text(eyebrow.uppercase(), style = MaterialTheme.typography.labelSmall, color = pal.inkMuted)
+        Text(
+            eyebrow.uppercase(),
+            style = MaterialTheme.typography.labelSmall,
+            color = pal.inkMutedOnGlass,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+        )
         Spacer(Modifier.height(Space.xs))
-        Text(title, style = MaterialTheme.typography.titleMedium, color = pal.ink)
+        Text(
+            title,
+            style = MaterialTheme.typography.titleMedium,
+            color = pal.ink,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+        )
         Spacer(Modifier.height(Space.sm))
-        Text(hint, style = MaterialTheme.typography.bodyMedium, color = pal.inkMuted)
+        Text(
+            hint,
+            style = MaterialTheme.typography.bodyMedium,
+            color = pal.inkMutedOnGlass,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+        )
     }
 }
 
@@ -451,16 +468,24 @@ fun PlayingBars(
     }
 }
 
-private fun Modifier.graphicsLayerScaleY(v: androidx.compose.runtime.State<Float>): Modifier =
-    this.graphicsLayer {
-        scaleY = v.value
-        transformOrigin = TransformOrigin(0.5f, 1f)
-    }
-
 /** 扫光细线：解析/加载用（DESIGN 口径：不用转圈）。 */
 @Composable
 fun ScannerLine(modifier: Modifier = Modifier, color: Color? = null) {
     val pal = LocalIVAN.current
+    // 减少动效：不跑无限扫光，静态留一条居中亮线，仍然看得见"在加载"。
+    if (MotionPrefs.reduce) {
+        Box(
+            modifier
+                .fillMaxWidth()
+                .height(2.dp)
+                .background(
+                    Brush.horizontalGradient(
+                        listOf(Color.Transparent, color ?: pal.accent, Color.Transparent)
+                    )
+                )
+        )
+        return
+    }
     val transition = androidx.compose.animation.core.rememberInfiniteTransition(label = "scan")
     val x by transition.animateFloat(
         initialValue = -0.4f,

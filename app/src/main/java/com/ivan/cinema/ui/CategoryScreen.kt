@@ -1,6 +1,7 @@
 package com.ivan.cinema.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -12,7 +13,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -20,6 +23,9 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.ArrowBack
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -32,6 +38,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.ivan.cinema.IVANApp
 import com.ivan.cinema.data.Aggregator
@@ -52,7 +59,9 @@ import com.ivan.cinema.ui.theme.Space
 fun CategoryScreen(
     tab: HomeTab,
     columns: Int,
-    onOpenDetail: (MergedVod) -> Unit
+    onOpenDetail: (MergedVod) -> Unit,
+    // 底栏在推入页隐藏，本页没有系统返回键以外的出口 —— 必须由调用方接上 popPage()
+    onBack: () -> Unit = {}
 ) {
     val pal = LocalIVAN.current
     val ctx = IVANApp.ctx()
@@ -118,6 +127,25 @@ fun CategoryScreen(
                 .padding(horizontal = Space.lg, vertical = Space.md),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // 返回入口：和详情页返回胶囊同款（48dp / 黑 55% / 1px 白描边）
+            val backInteraction = remember { MutableInteractionSource() }
+            Box(
+                Modifier
+                    .padding(end = Space.sm)
+                    .size(48.dp)
+                    .clip(RoundedCornerShape(Radius.pill))
+                    .background(Color.Black.copy(alpha = 0.55f))
+                    .border(1.dp, Color.White.copy(alpha = 0.22f), RoundedCornerShape(Radius.pill))
+                    .clickable(interactionSource = backInteraction, indication = null) { onBack() },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Rounded.ArrowBack,
+                    contentDescription = "返回",
+                    tint = Color.White,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
             Text(
                 tab.title,
                 style = MaterialTheme.typography.headlineSmall,
@@ -135,14 +163,7 @@ fun CategoryScreen(
                 userScrollEnabled = false,
                 modifier = Modifier.fillMaxSize()
             ) {
-                items(12) {
-                    Box(
-                        Modifier
-                            .aspectRatio(2f / 3f)
-                            .clip(RoundedCornerShape(Radius.md))
-                            .background(pal.surfaceRaised.copy(alpha = 0.55f))
-                    )
-                }
+                items(12) { CardSkeleton() }
             }
         } else if (items.isEmpty()) {
             Box(
@@ -169,12 +190,47 @@ fun CategoryScreen(
                         pic = item.pic,
                         hits = mutableListOf(SourceHit(item.source, item.vodId, item.remarks))
                     )
-                    StaggerIn(index = index % 12, identity = item.source.api + item.vodId) {
+                    StaggerIn(index = index, identity = item.source.api + item.vodId) {
                         PosterCard(item = merged, onClick = { onOpenDetail(merged) })
                     }
                 }
             }
         }
         }
+    }
+}
+
+/**
+ * 骨架卡：与 [PosterCard] 同几何 —— 2:3 海报 + 22dp 标题条 + 14dp 元信息条
+ * （含 Space.sm / 2dp / Space.sm 的间距）。原来只有一个裸灰盒，每行比真卡矮约 44dp，
+ * 数据一到网格就整体跳动。
+ */
+@Composable
+private fun CardSkeleton() {
+    val pal = LocalIVAN.current
+    Column(Modifier.fillMaxWidth()) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(2f / 3f)
+                .clip(RoundedCornerShape(Radius.md))
+                .background(pal.surfaceRaised.copy(alpha = 0.55f))
+        )
+        Box(
+            Modifier
+                .padding(start = 2.dp, end = 2.dp, top = Space.sm)
+                .fillMaxWidth(0.78f)
+                .height(22.dp)
+                .clip(RoundedCornerShape(Radius.sm))
+                .background(pal.surfaceRaised.copy(alpha = 0.45f))
+        )
+        Box(
+            Modifier
+                .padding(start = 2.dp, end = 2.dp, top = 2.dp, bottom = Space.sm)
+                .fillMaxWidth(0.45f)
+                .height(14.dp)
+                .clip(RoundedCornerShape(Radius.sm))
+                .background(pal.surfaceRaised.copy(alpha = 0.45f))
+        )
     }
 }

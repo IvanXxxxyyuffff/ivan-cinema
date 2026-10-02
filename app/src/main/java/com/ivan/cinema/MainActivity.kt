@@ -54,6 +54,7 @@ import com.ivan.cinema.ui.DownloadScreen
 import com.ivan.cinema.ui.FilterScreen
 import com.ivan.cinema.ui.HomeScreen
 import com.ivan.cinema.ui.LoginScreen
+import com.ivan.cinema.ui.MiniPlayerBar
 import com.ivan.cinema.ui.SearchScreen
 import com.ivan.cinema.ui.SettingsScreen
 import com.ivan.cinema.ui.components.LiquidNavBar
@@ -120,12 +121,18 @@ class MainActivity : ComponentActivity() {
         val portalState = remember { mutableStateOf(0f) }
         var searchOpen by remember { mutableStateOf(false) }
         var searchAnimating by remember { mutableStateOf(false) }
+        // 搜索覆盖层是否挂载。不能在组合期读 portalState（那会让整个 Root 每帧重组），
+        // 所以用这个普通布尔：打开前置 true，关闭动画跑完再置 false。
+        var searchLayerMounted by remember { mutableStateOf(false) }
 
         var ambientPoster by remember { mutableStateOf<String?>(null) }
         var watchEntry by remember { mutableStateOf<WatchEntry?>(null) }
 
         val wide = LocalConfiguration.current.screenWidthDp >= 840
         val columns = if (wide) 6 else 3
+
+        // 迷你播放条出现时，列表底部要再让出一条，否则最后一行会被它压住
+        val contentBottom = if (com.ivan.cinema.data.NowPlaying.entry.value != null) 196.dp else 168.dp
 
         fun pushPage(p: Page) {
             if (pushAnimating) return
@@ -165,6 +172,7 @@ class MainActivity : ComponentActivity() {
             if (searchOpen || searchAnimating) return
             searchAnimating = true
             searchOpen = true
+            searchLayerMounted = true
             scope.launch {
                 portalAnim.animateTo(
                     targetValue = 1f,
@@ -186,13 +194,15 @@ class MainActivity : ComponentActivity() {
                 )
                 searchOpen = false
                 searchAnimating = false
+                searchLayerMounted = false
             }
         }
 
         fun openDetail(m: MergedVod) {
             watchEntry = null
             scope.launch(Dispatchers.IO) {
-                watchEntry = AppDb.get(applicationContext).watchDao().get(m.key)
+                watchEntry = AppDb.get(applicationContext).watchDao()
+                    .getFor(com.ivan.cinema.data.Account.currentUserId(), m.key)
             }
             pushPage(Page.Detail(m))
         }
@@ -279,7 +289,7 @@ class MainActivity : ComponentActivity() {
                             onMore = { t -> pushPage(Page.Category(t)) },
                             onSearch = ::openSearch,
                             onFilter = { pushPage(Page.Filter) },
-                            contentBottomPadding = 168.dp
+                            contentBottomPadding = contentBottom
                         )
                         1 -> DownloadScreen(
                             onPlayLocal = { url, title ->
@@ -288,10 +298,10 @@ class MainActivity : ComponentActivity() {
                                     .putExtra("name", title)
                                 startActivity(it)
                             },
-                            contentBottomPadding = 168.dp
+                            contentBottomPadding = contentBottom
                         )
                         else -> SettingsScreen(
-                            contentBottomPadding = 168.dp,
+                            contentBottomPadding = contentBottom,
                             onLogin = { pushPage(Page.Login) }
                         )
                     }
@@ -301,7 +311,7 @@ class MainActivity : ComponentActivity() {
             // ── 搜索覆盖层（Portal 专属动画）──
             // ⚠️ 必须在推入栈**之前**绘制：搜索页 → 筛选页/详情页时，栈页要盖住它，
             // 否则两层同时可见（真机实锤过的重叠 bug）。
-            if (searchOpen || portalState.value > 0f) {
+            if (searchLayerMounted) {
                 CompositionLocalProvider(LocalPortal provides portalState) {
                     Box(
                         Modifier
@@ -315,7 +325,7 @@ class MainActivity : ComponentActivity() {
                             columns = columns,
                             onOpenDetail = ::openDetail,
                             onFilter = { pushPage(Page.Filter) },
-                            contentBottomPadding = 168.dp
+                            contentBottomPadding = contentBottom
                         )
                     }
                 }
@@ -340,13 +350,15 @@ class MainActivity : ComponentActivity() {
                             is Page.Category -> CategoryScreen(
                                 tab = page.tab,
                                 columns = columns,
-                                onOpenDetail = ::openDetail
+                                onOpenDetail = ::openDetail,
+                                onBack = { popPage() }
                             )
                             is Page.Detail -> DetailScreen(
                                 merged = page.vod,
                                 watchEntry = watchEntry,
                                 onPlay = ::play,
-                                onDownload = ::download
+                                onDownload = ::download,
+                                onBack = { popPage() }
                             )
                             is Page.Filter -> FilterScreen(
                                 columns = columns,
@@ -358,9 +370,13 @@ class MainActivity : ComponentActivity() {
                                     scope.launch { push.snapTo(1f) }
                                     pushState.value = 1f
                                     openSearch()
-                                }
+                                },
+                                onBack = { popPage() }
                             )
-                            is Page.Login -> LoginScreen(onDone = { popPage() })
+                            is Page.Login -> LoginScreen(
+                                onDone = { popPage() },
+                                onBack = { popPage() }
+                            )
                         }
                     }
                 }
@@ -375,7 +391,11 @@ class MainActivity : ComponentActivity() {
                         .height(168.dp)
                         .background(
                             Brush.verticalGradient(
-                                listOf(Color.Transparent, DarkPalette.canvas.copy(alpha = 0.92f))
+                                // 底部必须完全不透明：底栏是浮起的玻璃胶囊，
+                                // 列表内容从它上下透出来会像渲染错误（实拍确认过）
+                                0f to Color.Transparent,
+                                0.45f to DarkPalette.canvas.copy(alpha = 0.94f),
+                                1f to DarkPalette.canvas
                             )
                         )
                 )
@@ -396,10 +416,26 @@ class MainActivity : ComponentActivity() {
                             scope.launch { portalAnim.snapTo(0f) }
                             portalState.value = 0f
                             searchOpen = false
+                            // 硬关：覆盖层必须一起卸载，否则它留在组合里挡住底栏
+                            searchLayerMounted = false
                         }
                         rootTab = i
                     }
                 )
+
+                // ── 迷你播放条：退出播放页后仍能一键回到那一集、那个位置 ──
+                val nowPlaying = com.ivan.cinema.data.NowPlaying.entry.value
+                if (nowPlaying != null && !searchOpen) {
+                    MiniPlayerBar(
+                        entry = nowPlaying,
+                        onOpen = { playFromWatch(nowPlaying) },
+                        onClose = { com.ivan.cinema.data.NowPlaying.clear() },
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .navigationBarsPadding()
+                            .padding(start = 20.dp, end = 20.dp, bottom = 104.dp)
+                    )
+                }
             }
         }
     }

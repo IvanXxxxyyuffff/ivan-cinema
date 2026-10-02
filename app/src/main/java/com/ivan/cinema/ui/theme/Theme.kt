@@ -45,6 +45,10 @@ data class IVANPalette(
     val danger: Color,
     /** 品牌色。只给字标和徽章用，不表示状态。 */
     val brand: Color,
+    /** 角标底色（「热」「新」等短标记）。 */
+    val badge: Color,
+    /** 角标上的文字色。 */
+    val badgeInk: Color,
     /**
      * 玻璃面上的文字色。
      *
@@ -69,6 +73,8 @@ val DarkPalette = IVANPalette(
     accentInk = Color(0xFF241C08),
     danger = Color(0xFFD96A6A),
     brand = BrandGold,
+    badge = Color(0xFFA63412),
+    badgeInk = Color(0xFFFFFFFF),
     inkMutedOnGlass = Color(0xFFD5D2DE),
     accentOnGlass = Color(0xFFE8CE9A),
     dangerOnGlass = Color(0xFFFFB4B4),
@@ -85,6 +91,8 @@ val LightPalette = IVANPalette(
     accentInk = Color(0xFFFFFFFF),
     danger = Color(0xFFB04A4A),
     brand = Color(0xFF8A6716),
+    badge = Color(0xFF8A2F2F),
+    badgeInk = Color(0xFFFFFFFF),
     inkMutedOnGlass = Color(0xFF57534E),
     accentOnGlass = Color(0xFF6B5122),
     dangerOnGlass = Color(0xFF8A2F2F),
@@ -138,13 +146,22 @@ val IVANType = Typography(
 /** Mono，用于时间戳/计数。 */
 val MetaMono = TextStyle(fontSize = 11.sp, fontWeight = FontWeight.Medium, fontFamily = FontFamily.Monospace, letterSpacing = 0.6.sp)
 
+/**
+ * 登录页字标「IVAN CINEMA」——26sp 加粗、4sp 字距。
+ * 唯一出处；LoginScreen 曾内联手写，改用这个，别再猜第四份。
+ */
+val LoginWordmark = TextStyle(
+    fontSize = 26.sp,
+    lineHeight = 32.sp,
+    fontWeight = FontWeight.Bold,
+    letterSpacing = 4.sp,
+)
+
 /*
  * Motion tokens —— 三档物理弹簧（iOS response/damping 映射）：
  *   general (0.40s, 1.00) 临界阻尼：铬件、导航
  *   sheet   (0.30s, 0.80) 轻微过冲：面板、按压回弹
- *   snappy  (0.25s, 1.00) 绝不越界：小状态翻转
- *   jelly   (0.38s, 0.70) 整屏落位的"刹住车"
- *   pop     (0.40s, 0.30) 只给 20dp 级小物件的卡通弹跳
+ *   snappy  (0.25s, 1.00) 绝不越界：小状态翻转、列表落位
  *
  * 纪律：任何地方不许手写 spring()；一切动效取值器都是 @Composable（要订阅减少动效）；
  * 位移/缩放/透明度用弹簧；离场用加速曲线（motionExit）。
@@ -153,13 +170,9 @@ enum class MotionKind(val stiffness: Float, val dampingRatio: Float) {
     General(246.74f, 1.0f),
     Sheet(438.65f, 0.8f),
     Snappy(631.65f, 1.0f),
-    Jelly(380f, 0.70f),
-    Pop(400f, 0.30f),
 }
 
 object Springs {
-    val general: SpringSpec<Float> = spring(stiffness = MotionKind.General.stiffness, dampingRatio = MotionKind.General.dampingRatio)
-    val sheet: SpringSpec<Float> = spring(stiffness = MotionKind.Sheet.stiffness, dampingRatio = MotionKind.Sheet.dampingRatio)
     val snappy: SpringSpec<Float> = spring(stiffness = MotionKind.Snappy.stiffness, dampingRatio = MotionKind.Snappy.dampingRatio)
 }
 
@@ -171,9 +184,6 @@ private fun <T> settle(kind: MotionKind): SpringSpec<T> = spring(
 
 @Composable
 fun motionFloat(kind: MotionKind): SpringSpec<Float> = settle(kind)
-
-@Composable
-fun motionColor(kind: MotionKind): SpringSpec<Color> = settle(kind)
 
 @Composable
 fun motionFade(

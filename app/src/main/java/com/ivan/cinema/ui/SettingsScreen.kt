@@ -12,18 +12,22 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -47,6 +51,7 @@ import com.ivan.cinema.IVANApp
 import com.ivan.cinema.data.Account
 import com.ivan.cinema.data.ApkState
 import com.ivan.cinema.data.ApkUpdater
+import com.ivan.cinema.data.SupabaseConfig
 import com.ivan.cinema.data.UpdateChecker
 import com.ivan.cinema.data.UpdateInfo
 import com.ivan.cinema.ui.components.LiquidCard
@@ -56,6 +61,7 @@ import com.ivan.cinema.ui.theme.MotionPrefs
 import com.ivan.cinema.ui.theme.Radius
 import com.ivan.cinema.ui.theme.Space
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -71,6 +77,10 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
     var cacheCleared by remember { mutableStateOf(false) }
     var historyCleared by remember { mutableStateOf(false) }
     var showLogout by remember { mutableStateOf(false) }
+    // 退出登录会清掉登录态，二次确认
+    var confirmLogout by remember { mutableStateOf(false) }
+    // 检查更新是异步无回调的：这里承接「已是最新 / 检查失败」的瞬时反馈
+    var updateNote by remember { mutableStateOf<String?>(null) }
     var installArmed by remember { mutableStateOf(false) }
     val apkState = ApkUpdater.state.value
 
@@ -143,8 +153,11 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
                             }
                             Spacer(Modifier.height(2.dp))
                             Text(
-                                if (account == null) "登录后可显示身份位与会员标识"
-                                else if (account.isSvip) "会员身份 · 本机有效" else "普通用户",
+                                if (account == null) {
+                                    // 只有真正配置了 Supabase 才承诺同步，否则只是本机身份位
+                                    if (SupabaseConfig.isConfigured()) "登录后可同步观看记录"
+                                    else "登录后可显示身份位与会员标识"
+                                } else if (account.isSvip) "会员身份 · 本机有效" else "普通用户",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = pal.inkMutedOnGlass
                             )
@@ -163,7 +176,8 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
                                 .clickable(interactionSource = action, indication = null) {
                                     if (account == null) onLogin() else showLogout = !showLogout
                                 }
-                                .padding(horizontal = Space.md, vertical = 15.dp)
+                                .pillHit()
+                                .padding(horizontal = Space.md)
                         )
                     }
                     if (account != null && showLogout) {
@@ -181,7 +195,8 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
                                     .clickable(interactionSource = svipAction, indication = null) {
                                         Account.setSvip(ctx, !account.isSvip)
                                     }
-                                    .padding(horizontal = Space.md, vertical = 15.dp)
+                                    .pillHit()
+                                    .padding(horizontal = Space.md)
                             )
                             val logoutAction = remember { MutableInteractionSource() }
                             Text(
@@ -193,10 +208,11 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
                                     .clip(RoundedCornerShape(Radius.pill))
                                     .background(Color.White.copy(alpha = 0.12f))
                                     .clickable(interactionSource = logoutAction, indication = null) {
-                                        Account.logout(ctx)
-                                        showLogout = false
+                                        // 退出会清登录态，先确认
+                                        confirmLogout = true
                                     }
-                                    .padding(horizontal = Space.md, vertical = 15.dp)
+                                    .pillHit()
+                                    .padding(horizontal = Space.md)
                             )
                         }
                     }
@@ -234,9 +250,11 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
                                 }
                             }
                             Text(
-                                updateSubtitle(update, apkState, BuildConfig.VERSION_NAME),
+                                // 检查完成的瞬时反馈优先于常态副标题
+                                updateNote ?: updateSubtitle(update, apkState, BuildConfig.VERSION_NAME),
                                 style = MaterialTheme.typography.labelSmall,
-                                color = if (apkState is ApkState.Failed) pal.danger else pal.inkMuted
+                                color = if (apkState is ApkState.Failed || updateNote?.startsWith("检查失败") == true)
+                                    pal.danger else pal.inkMuted
                             )
                         }
                         val checkAction = remember { MutableInteractionSource() }
@@ -261,12 +279,34 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
                                         }
                                         else -> {
                                             val u = UpdateChecker.latest.value
-                                            if (u != null) ApkUpdater.download(ctx, u.url, u.versionName)
-                                            else UpdateChecker.check(ctx, BuildConfig.VERSION_CODE)
+                                            if (u != null) {
+                                                ApkUpdater.download(ctx, u.url, u.versionName)
+                                            } else {
+                                                // UpdateChecker.check 无回调：这里等镜像返回，
+                                                // 再给「已是最新 / 检查失败」的可见反馈，不再点了没反应
+                                                updateNote = "正在检查…"
+                                                scope.launch {
+                                                    UpdateChecker.check(ctx, BuildConfig.VERSION_CODE)
+                                                    // 镜像超时 6s，最多等 7.5s
+                                                    var waited = 0
+                                                    while (waited < 7500 && UpdateChecker.latest.value == null) {
+                                                        delay(300)
+                                                        waited += 300
+                                                    }
+                                                    updateNote = when {
+                                                        UpdateChecker.latest.value != null -> null
+                                                        !hasNetwork(ctx) -> "检查失败，稍后再试"
+                                                        else -> "已是最新版本"
+                                                    }
+                                                    delay(4000)
+                                                    updateNote = null
+                                                }
+                                            }
                                         }
                                     }
                                 }
-                                .padding(horizontal = Space.md, vertical = 15.dp)
+                                .pillHit()
+                                .padding(horizontal = Space.md)
                         )
                     }
 
@@ -307,7 +347,7 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
                         checked = reduce,
                         onCheckedChange = {
                             reduce = it
-                            MotionPrefs.setUser(it)
+                            MotionPrefs.setUser(ctx, it)
                         },
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = pal.accentInk,
@@ -353,7 +393,8 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
                                     cacheCleared = true
                                 }
                             }
-                            .padding(horizontal = Space.md, vertical = Space.sm)
+                            .pillHit()
+                            .padding(horizontal = Space.md)
                     )
                 }
             }
@@ -391,7 +432,8 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
                                     historyCleared = true
                                 }
                             }
-                            .padding(horizontal = Space.md, vertical = Space.sm)
+                            .pillHit()
+                            .padding(horizontal = Space.md)
                     )
                 }
             }
@@ -401,12 +443,62 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
             Text(
                 "IVAN CINEMA · 自用版\n数据来自公开采集接口，仅本机使用",
                 style = MaterialTheme.typography.labelSmall,
-                color = pal.inkMutedOnGlass.copy(alpha = 0.7f),
+                // 10sp + 0.7 alpha 只有 4.3:1，低于 4.5:1 —— 去掉 alpha
+                color = pal.inkMutedOnGlass,
                 modifier = Modifier.padding(vertical = Space.md)
             )
         }
     }
+
+    if (confirmLogout) {
+        AlertDialog(
+            onDismissRequest = { confirmLogout = false },
+            title = { Text("退出登录", color = pal.ink) },
+            text = {
+                Text(
+                    "退出后需要重新登录才能恢复身份位与同步，确定退出？",
+                    color = pal.inkMutedOnGlass
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        Account.logout(ctx)
+                        showLogout = false
+                        confirmLogout = false
+                    },
+                    modifier = Modifier.heightIn(min = 48.dp)
+                ) {
+                    Text("退出", color = pal.dangerOnGlass)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { confirmLogout = false },
+                    modifier = Modifier.heightIn(min = 48.dp)
+                ) {
+                    Text("取消", color = pal.inkMutedOnGlass)
+                }
+            },
+            containerColor = pal.surfaceRaised,
+            titleContentColor = pal.ink,
+            textContentColor = pal.inkMutedOnGlass
+        )
+    }
 }
+
+/** 胶囊按钮统一 48dp 命中区，文字在最小高度内垂直居中。 */
+private fun Modifier.pillHit(): Modifier =
+    this.heightIn(min = 48.dp).wrapContentHeight(Alignment.CenterVertically)
+
+/** 是否有可用网络：区分「已是最新」和「检查失败」的唯一本地依据。 */
+private fun hasNetwork(ctx: android.content.Context): Boolean = runCatching {
+    val cm = ctx.getSystemService(android.content.Context.CONNECTIVITY_SERVICE)
+        as android.net.ConnectivityManager
+    val net = cm.activeNetwork ?: return@runCatching false
+    val caps = cm.getNetworkCapabilities(net) ?: return@runCatching false
+    caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+}.getOrDefault(false)
 
 /** 更新卡片副标题：下载中显示进度，失败显示原因，其余显示版本信息。 */
 private fun updateSubtitle(update: UpdateInfo?, apk: ApkState, currentVersion: String): String = when {

@@ -9,6 +9,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -59,23 +60,36 @@ object SourceHealth {
         val app = ctx.applicationContext
         kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
             val all = SourcePool.load(app)
-            val sem = Semaphore(8)
-            val alive = coroutineScope {
-                all.map { src ->
-                    async {
-                        sem.withPermit { probe(src) }
-                    }
-                }.awaitAll().filterNotNull()
+            // 共享健康聚合与探测**并行**拉取，最多等 3 秒；拿不到就纯本地排序。
+            // 这是 best-effort：网络慢/未登录都不会拖慢或阻塞启动。
+            val sharedDeferred = async {
+                runCatching { withTimeoutOrNull(3_000) { SharedHealth.fetch(app) } }.getOrNull()
             }
+            val sem = Semaphore(8)
+            // api -> 是否存活：一次探测同时产出排序用结果与上报用的原始结果
+            val results = coroutineScope {
+                all.map { src ->
+                    async { src.api to (sem.withPermit { probe(src) } != null) }
+                }.awaitAll().toMap()
+            }
+            val alive = all.filter { results[it.api] == true }
             if (alive.isEmpty()) return@launch
-            val ranked = alive.sortedBy { s ->
-                PRIORITY.indexOf(s.name).let { if (it < 0) 999 else it }
-            }.take(10)
+            val stats = sharedDeferred.await().orEmpty()
+            // 排序：共享判定为坏源的先降权，再按内置优先级。
+            // 未登录 / 无网络时 stats 为空，行为与改造前完全一致。
+            val ranked = alive.sortedWith(
+                compareBy<VodSource>(
+                    { s -> if (SharedHealth.isBad(stats[s.api])) 1 else 0 },
+                    { s -> PRIORITY.indexOf(s.name).let { if (it < 0) 999 else it } }
+                )
+            ).take(10)
             verified.value = ranked
             app.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit()
                 .putString(KEY_JSON, toJson(ranked))
                 .putLong(KEY_TS, System.currentTimeMillis())
                 .apply()
+            // 上报本次探测（独立协程，未登录自动 no-op），不拖慢上面的落盘
+            launch { runCatching { SharedHealth.reportProbe(app, results) } }
         }
     }
 

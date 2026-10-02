@@ -27,15 +27,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
+import coil.compose.SubcomposeAsyncImage
 import com.ivan.cinema.data.MergedVod
 import com.ivan.cinema.ui.components.pressDip
 import com.ivan.cinema.ui.theme.LocalIVAN
@@ -66,14 +63,20 @@ fun PosterCard(
                 .fillMaxWidth()
                 .aspectRatio(2f / 3f)
                 .clip(RoundedCornerShape(Radius.md))
-                .background(pal.surfaceRaised)
+                // 加载期保留浅渐变占位；加载失败退到可见的 FilmTile，不留匿名空盒
+                .background(
+                    Brush.verticalGradient(
+                        listOf(pal.surfaceRaised, pal.surfaceRaised.copy(alpha = 0.68f))
+                    )
+                )
         ) {
             if (item.pic.isNotEmpty()) {
-                AsyncImage(
+                SubcomposeAsyncImage(
                     model = item.pic,
                     contentDescription = item.name,
                     contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier.fillMaxSize(),
+                    error = { FilmTile(Modifier.fillMaxSize()) }
                 )
             } else {
                 FilmTile(Modifier.fillMaxSize())
@@ -83,13 +86,13 @@ fun PosterCard(
                 Text(
                     text = remark,
                     style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
-                    color = pal.ink,
+                    color = pal.badgeInk,
                     maxLines = 1,
                     modifier = Modifier
-                        .align(Alignment.TopEnd)
+                        .align(Alignment.TopStart)
                         .padding(6.dp)
                         .clip(RoundedCornerShape(Radius.sm))
-                        .background(Color(0xB3000000))
+                        .background(pal.badge)
                         .padding(horizontal = 6.dp, vertical = 2.dp)
                 )
             }

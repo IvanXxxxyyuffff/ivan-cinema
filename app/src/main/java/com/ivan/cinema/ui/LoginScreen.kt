@@ -17,12 +17,18 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.VisibilityOff
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -44,6 +50,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ivan.cinema.IVANApp
@@ -61,13 +68,14 @@ import kotlinx.coroutines.withContext
 
 /** 登录 / 注册（本地账号，自用）。 */
 @Composable
-fun LoginScreen(onDone: () -> Unit) {
+fun LoginScreen(onDone: () -> Unit, onBack: () -> Unit = {}) {
     val pal = LocalIVAN.current
     val ctx = IVANApp.ctx()
     val scope = rememberCoroutineScope()
     var user by remember { mutableStateOf("") }
     var pass by remember { mutableStateOf("") }
     var registerMode by remember { mutableStateOf(false) }
+    var showPass by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
 
@@ -93,7 +101,8 @@ fun LoginScreen(onDone: () -> Unit) {
             )
             Spacer(Modifier.height(Space.sm))
             Text(
-                if (registerMode) "起个用户名，英文数字都行" else "登录后可同步观看记录与身份位",
+                if (registerMode) "用户名 2–20 位，仅限英文、数字与 . _ -（不支持中文）"
+                else "登录后可同步观看记录",
                 style = MaterialTheme.typography.bodyMedium,
                 color = pal.inkMutedOnGlass
             )
@@ -110,7 +119,9 @@ fun LoginScreen(onDone: () -> Unit) {
                 value = pass,
                 onValueChange = { pass = it; error = null },
                 hint = "密码（至少 6 位）",
-                isPassword = true
+                isPassword = true,
+                visible = showPass,
+                onToggleVisible = { showPass = !showPass }
             )
 
             error?.let {
@@ -152,6 +163,8 @@ fun LoginScreen(onDone: () -> Unit) {
                             if (err == null) onDone() else error = err
                         }
                     }
+                    .heightIn(min = 48.dp)
+                    .wrapContentHeight(Alignment.CenterVertically)
                     .padding(vertical = 13.dp),
                 contentAlignment = Alignment.Center
             ) {
@@ -177,7 +190,29 @@ fun LoginScreen(onDone: () -> Unit) {
                         registerMode = !registerMode
                         error = null
                     }
-                    .padding(horizontal = Space.md, vertical = Space.sm)
+                    .heightIn(min = 48.dp)
+                    .wrapContentHeight(Alignment.CenterVertically)
+                    .padding(horizontal = Space.md)
+            )
+        }
+
+        // 从设置页进来只能靠系统返回键 —— 这里补一个左上角返回（与详情页同款）
+        Box(
+            Modifier
+                .align(Alignment.TopStart)
+                .statusBarsPadding()
+                .padding(start = Space.md, top = Space.sm)
+                .size(48.dp)
+                .clip(RoundedCornerShape(Radius.pill))
+                .background(Color.Black.copy(alpha = 0.34f))
+                .clickable { onBack() },
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Rounded.ArrowBack,
+                contentDescription = "返回",
+                tint = Color.White,
+                modifier = Modifier.size(22.dp)
             )
         }
     }
@@ -188,41 +223,66 @@ private fun LoginField(
     value: String,
     onValueChange: (String) -> Unit,
     hint: String,
-    isPassword: Boolean
+    isPassword: Boolean,
+    visible: Boolean = false,
+    onToggleVisible: (() -> Unit)? = null
 ) {
     val pal = LocalIVAN.current
     LiquidBar(modifier = Modifier.fillMaxWidth(), radius = Radius.lg, elevated = false) {
-        Box(
+        Row(
             Modifier
-                .padding(horizontal = Space.lg, vertical = 13.dp)
+                .padding(horizontal = Space.lg)
                 .heightIn(min = 48.dp),
-            contentAlignment = Alignment.CenterStart
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            BasicTextField(
-                value = value,
-                onValueChange = onValueChange,
-                singleLine = true,
-                textStyle = TextStyle(color = pal.ink, fontSize = 16.sp),
-                cursorBrush = SolidColor(pal.accent),
-                visualTransformation = if (isPassword) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = if (isPassword) KeyboardType.Password else KeyboardType.Text,
-                    // 密码是最后一个字段，回车直接提交，不再弹「下一项」
-                    imeAction = if (isPassword) ImeAction.Done else ImeAction.Next
-                ),
-                decorationBox = { inner ->
-                    Box {
-                        if (value.isEmpty()) {
-                            Text(hint, style = MaterialTheme.typography.bodyLarge, color = pal.inkMutedOnGlass)
+            Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                BasicTextField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    singleLine = true,
+                    textStyle = TextStyle(color = pal.ink, fontSize = 16.sp),
+                    cursorBrush = SolidColor(pal.accent),
+                    visualTransformation = if (isPassword && !visible) {
+                        PasswordVisualTransformation()
+                    } else {
+                        VisualTransformation.None
+                    },
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = if (isPassword) KeyboardType.Password else KeyboardType.Text,
+                        // 密码是最后一个字段，回车直接提交，不再弹「下一项」
+                        imeAction = if (isPassword) ImeAction.Done else ImeAction.Next
+                    ),
+                    decorationBox = { inner ->
+                        Box {
+                            if (value.isEmpty()) {
+                                Text(hint, style = MaterialTheme.typography.bodyLarge, color = pal.inkMutedOnGlass)
+                            }
+                            inner()
                         }
-                        inner()
-                    }
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    // 占位符是兄弟节点，读屏只会念「编辑框」，这里补一个可读名字
-                    .semantics { contentDescription = hint }
-            )
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        // 占位符是兄弟节点，读屏只会念「编辑框」，这里补一个可读名字
+                        .semantics { contentDescription = hint }
+                )
+            }
+            // 密码可见性开关：48dp 命中区，图标画在字段内
+            if (isPassword) {
+                Box(
+                    Modifier
+                        .size(48.dp)
+                        .clip(CircleShape)
+                        .clickable { onToggleVisible?.invoke() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        if (visible) Icons.Rounded.Visibility else Icons.Rounded.VisibilityOff,
+                        contentDescription = if (visible) "隐藏密码" else "显示密码",
+                        tint = pal.inkMutedOnGlass,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
         }
     }
 }

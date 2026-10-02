@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -17,10 +18,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Search
@@ -40,12 +41,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.compose.SubcomposeAsyncImage
 import com.ivan.cinema.IVANApp
 import com.ivan.cinema.data.Aggregator
 import com.ivan.cinema.data.ClassCache
@@ -88,7 +88,11 @@ fun HomeScreen(
     // 观察探测结果，否则后台核验完成后可信源排序在本会话内不生效
     val verified by SourceHealth.verified
     val sources = remember(verified) { SourceHealth.sources(ctx) }
-    val watch by AppDb.get(IVANApp.app).watchDao().recent().collectAsState(initial = emptyList())
+    // 观看记录按当前用户过滤（本机表原来没有 user 列，换账号会串记录）
+    val uid = com.ivan.cinema.data.Account.currentUserId()
+    val watch by remember(uid) {
+        AppDb.get(IVANApp.app).watchDao().recentFor(uid)
+    }.collectAsState(initial = emptyList())
 
     var tab by remember { mutableStateOf(HomeTab.MOVIE) }
     var items by remember { mutableStateOf<List<VodItem>?>(null) }
@@ -152,7 +156,8 @@ fun HomeScreen(
                     Row(
                         Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = Space.md + 2.dp, vertical = Space.sm + 3.dp),
+                            .height(48.dp)
+                            .padding(horizontal = Space.md + 2.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
@@ -180,9 +185,12 @@ fun HomeScreen(
                             style = MaterialTheme.typography.bodyLarge,
                             color = pal.inkMutedOnGlass,
                             modifier = Modifier
-                                // 补足点击目标：原来只有文字本身那点高度
+                                // 补足点击目标：撑满 48dp 胶囊高度；wrapContentHeight
+                                // 让文字在撑满后仍垂直居中（默认 CenterVertically）
                                 .clickable { onFilter() }
-                                .padding(horizontal = 9.dp, vertical = 14.dp)
+                                .fillMaxHeight()
+                                .wrapContentHeight()
+                                .padding(horizontal = 9.dp)
                         )
                     }
                 }
@@ -200,8 +208,8 @@ fun HomeScreen(
                     val on = t == tab
                     Text(
                         t.title,
-                        fontSize = if (on) 20.sp else 17.sp,
-                        fontWeight = if (on) FontWeight.Bold else FontWeight.Normal,
+                        style = if (on) MaterialTheme.typography.titleLarge
+                        else MaterialTheme.typography.titleMedium,
                         color = if (on) pal.ink else pal.inkMuted,
                         modifier = Modifier
                             .clip(RoundedCornerShape(Radius.sm))
@@ -230,6 +238,8 @@ fun HomeScreen(
                         model = banner.pic,
                         contentDescription = banner.name,
                         contentScale = ContentScale.Crop,
+                        // 2:3 竖版海报裁成 16:9 时，从顶部取才拿得到标题美术字
+                        alignment = Alignment.TopCenter,
                         modifier = Modifier.fillMaxSize()
                     )
                     Box(
@@ -246,11 +256,12 @@ fun HomeScreen(
                     Column(
                         Modifier
                             .align(Alignment.BottomStart)
-                            .padding(Space.md + 2.dp)
+                            // 右侧预留 56dp 车道，长文案不越过安全边距
+                            .padding(start = 14.dp, end = 56.dp, bottom = 14.dp)
                     ) {
                         Text(
                             banner.name,
-                            style = MaterialTheme.typography.titleLarge,
+                            style = MaterialTheme.typography.headlineSmall,
                             color = Color.White,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
@@ -263,23 +274,6 @@ fun HomeScreen(
                                 color = Color.White.copy(alpha = 0.86f),
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
-                    Row(
-                        Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(Space.md + 2.dp),
-                        horizontalArrangement = Arrangement.spacedBy(5.dp)
-                    ) {
-                        repeat(4) { i ->
-                            Box(
-                                Modifier
-                                    .size(if (i == 0) 7.dp else 6.dp)
-                                    .clip(CircleShape)
-                                    .background(
-                                        if (i == 0) Color.White else Color.White.copy(alpha = 0.42f)
-                                    )
                             )
                         }
                     }
@@ -304,7 +298,7 @@ fun HomeScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        "热播推荐",
+                        "最近更新",
                         style = MaterialTheme.typography.titleLarge,
                         color = pal.ink,
                         modifier = Modifier.weight(1f)
@@ -325,10 +319,17 @@ fun HomeScreen(
 
         if (list == null) {
             item(key = "skeleton") {
-                Column(Modifier.padding(horizontal = Space.lg, vertical = Space.sm)) {
+                // 与真实网格同列数、同边距、同卡片几何（海报 + 14dp 标题条 + 10dp 元信息条），
+                // 数据落位时不发生列数/高度重排
+                Column {
                     repeat(3) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
-                            repeat(2) {
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = Space.lg, vertical = Space.md),
+                            horizontalArrangement = Arrangement.spacedBy(Space.md)
+                        ) {
+                            repeat(columns) {
                                 Column(Modifier.weight(1f)) {
                                     Box(
                                         Modifier
@@ -345,10 +346,17 @@ fun HomeScreen(
                                             .clip(RoundedCornerShape(Radius.sm))
                                             .background(pal.surfaceRaised.copy(alpha = 0.45f))
                                     )
+                                    Spacer(Modifier.height(Space.xs))
+                                    Box(
+                                        Modifier
+                                            .fillMaxWidth(0.45f)
+                                            .height(10.dp)
+                                            .clip(RoundedCornerShape(Radius.sm))
+                                            .background(pal.surfaceRaised.copy(alpha = 0.35f))
+                                    )
                                 }
                             }
                         }
-                        Spacer(Modifier.height(Space.block))
                     }
                 }
             }
@@ -388,6 +396,9 @@ fun HomeScreen(
     }
 }
 
+/** 这些备注每张卡都有，显示出来等于没信息，直接不显示。 */
+private val GENERIC_REMARKS = setOf("正片", "高清", "HD", "BD", "TC", "TS", "全集")
+
 private fun VodItem.toMerged(): MergedVod = MergedVod(
     key = Aggregator.mergeKey(name, year),
     name = name,
@@ -411,31 +422,42 @@ private fun BigCard(item: VodItem, modifier: Modifier = Modifier, onClick: () ->
                 .fillMaxWidth()
                 .aspectRatio(2f / 3f)
                 .clip(RoundedCornerShape(Radius.md))
-                .background(pal.surfaceRaised)
+                // 封面加载期间不能只是一块死灰，否则满屏空盒子像坏了；
+                // 用浅渐变让它读起来是「正在加载」
+                .background(
+                    Brush.verticalGradient(
+                        listOf(pal.surfaceRaised, pal.surfaceRaised.copy(alpha = 0.68f))
+                    )
+                )
         ) {
             if (item.pic.isNotEmpty()) {
-                AsyncImage(
+                SubcomposeAsyncImage(
                     model = item.pic,
                     contentDescription = item.name,
                     contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier.fillMaxSize(),
+                    // loading 槽留空 → 露出下层渐变占位；失败退到可见的 FilmTile
+                    error = { FilmTile(Modifier.fillMaxSize()) }
                 )
             } else {
                 FilmTile(Modifier.fillMaxSize())
             }
             val remark = item.remarks
-            if (remark.isNotEmpty()) {
-                val isBadge = remark.length <= 4
+            // 泛化备注（几乎每张卡都写「正片」「高清」）等于没有信息，是纯噪音；
+            // 只显示真正有信息量的（更新至第N集 / 完结 / 抢先版 …）
+            val showRemark = remark.isNotBlank() &&
+                GENERIC_REMARKS.none { it.equals(remark.trim(), ignoreCase = true) }
+            if (showRemark) {
                 Text(
                     remark,
                     style = MaterialTheme.typography.labelSmall,
-                    color = Color.White,
+                    color = pal.badgeInk,
                     maxLines = 1,
                     modifier = Modifier
-                        .align(if (isBadge) Alignment.TopStart else Alignment.BottomStart)
+                        .align(Alignment.TopStart)
                         .padding(6.dp)
                         .clip(RoundedCornerShape(Radius.sm))
-                        .background(if (isBadge) Color(0xE6F04E23) else Color(0x99000000))
+                        .background(pal.badge)
                         .padding(horizontal = 6.dp, vertical = 2.dp)
                 )
             }
@@ -443,8 +465,7 @@ private fun BigCard(item: VodItem, modifier: Modifier = Modifier, onClick: () ->
         Spacer(Modifier.height(Space.sm))
         Text(
             item.name,
-            fontSize = 16.sp,
-            fontWeight = FontWeight.Medium,
+            style = MaterialTheme.typography.titleMedium,
             color = pal.ink,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis

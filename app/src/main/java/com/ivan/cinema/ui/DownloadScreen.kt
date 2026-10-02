@@ -11,14 +11,17 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -29,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.offline.Download
@@ -58,6 +62,8 @@ fun DownloadScreen(
     // 首次读到下载索引之前 items 必然是空的，直接渲染空态会闪一下
     // 「还没有下载」，即使其实有任务在跑
     var loaded by remember { mutableStateOf(false) }
+    // 已完成的下载删掉就没了，必须二次确认；失败/排队项没内容可丢，直接删
+    var pendingDelete by remember { mutableStateOf<Download?>(null) }
 
     LaunchedEffect(Unit) {
         DownloadCenter.ensureInit(IVANApp.app)
@@ -79,6 +85,11 @@ fun DownloadScreen(
         }
     }
 
+    val svc = IVANDownloadService::class.java
+    val removeNow: (Download) -> Unit = { d ->
+        DownloadService.sendRemoveDownload(IVANApp.app, svc, d.request.id, false)
+    }
+
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier
@@ -97,11 +108,9 @@ fun DownloadScreen(
             }
             if (items.isNotEmpty()) {
                 val interaction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-                Text(
-                    if (anyActive) "全部暂停" else "全部继续",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = pal.ink,
-                    modifier = Modifier
+                // 48dp 命中区：原来只有 34dp，手指按不准
+                Box(
+                    Modifier
                         .pressDip(interaction, to = 0.94f)
                         .clip(RoundedCornerShape(Radius.pill))
                         .background(Color.White.copy(alpha = 0.14f))
@@ -116,8 +125,16 @@ fun DownloadScreen(
                                 )
                             }
                         }
-                        .padding(horizontal = Space.md, vertical = Space.sm)
-                )
+                        .heightIn(min = 48.dp)
+                        .padding(horizontal = Space.lg),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        if (anyActive) "全部暂停" else "全部继续",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = pal.ink
+                    )
+                }
             }
         }
         if (!loaded) {
@@ -138,77 +155,201 @@ fun DownloadScreen(
                 verticalArrangement = Arrangement.spacedBy(Space.md),
                 modifier = Modifier.fillMaxSize()
             ) {
-                items(items, key = { it.request.id }) { d ->
-                    DownloadRow(
-                        d = d,
-                        onPlay = {
-                            val title = String(d.request.data ?: ByteArray(0))
-                            onPlayLocal(d.request.uri.toString(), title)
-                        },
-                        onDelete = {
-                            DownloadService.sendRemoveDownload(
-                                IVANApp.app,
-                                IVANDownloadService::class.java,
-                                d.request.id,
-                                false
-                            )
-                        }
-                    )
+                // 按剧名分组：下载标题是「剧名 · 集名」，40 集一次性铺开就是 40 行垃圾
+                val groups = items.groupBy { showNameOf(downloadTitle(it)) }
+                groups.forEach { (show, episodes) ->
+                    item(key = "show:$show") {
+                        ShowHeader(name = show, count = episodes.size)
+                    }
+                    items(episodes, key = { it.request.id }) { d ->
+                        DownloadRow(
+                            d = d,
+                            onAction = {
+                                when (d.state) {
+                                    Download.STATE_COMPLETED -> {
+                                        val title = downloadTitle(d)
+                                        onPlayLocal(d.request.uri.toString(), title)
+                                    }
+                                    Download.STATE_DOWNLOADING ->
+                                        // media3 1.3.1 没有单条的 sendPauseDownload，
+                                        // 单条暂停要走 stopReason
+                                        DownloadService.sendSetStopReason(
+                                            IVANApp.app, svc, d.request.id,
+                                            STOP_REASON_PAUSED_BY_APP, false
+                                        )
+                                    Download.STATE_QUEUED -> removeNow(d)
+                                    else -> {
+                                        // 失败重试 / 暂停后继续：清掉 stopReason 再催一次
+                                        DownloadService.sendSetStopReason(
+                                            IVANApp.app, svc, d.request.id,
+                                            Download.STOP_REASON_NONE, false
+                                        )
+                                        DownloadService.sendResumeDownloads(IVANApp.app, svc, false)
+                                    }
+                                }
+                            },
+                            onDelete = {
+                                if (d.state == Download.STATE_COMPLETED) pendingDelete = d
+                                else removeNow(d)
+                            }
+                        )
+                    }
                 }
             }
         }
+    }
+
+    // 删除已完成下载前确认：文件删掉要重新下，不能一次误触就没了
+    pendingDelete?.let { d ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = {
+                Text("删除下载", color = pal.ink)
+            },
+            text = {
+                Text(
+                    "将删除「${downloadTitle(d)}」的本地文件，删除后需要重新下载。",
+                    color = pal.inkMutedOnGlass
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        removeNow(d)
+                        pendingDelete = null
+                    },
+                    modifier = Modifier.heightIn(min = 48.dp)
+                ) {
+                    Text("删除", color = pal.dangerOnGlass)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { pendingDelete = null },
+                    modifier = Modifier.heightIn(min = 48.dp)
+                ) {
+                    Text("取消", color = pal.inkMutedOnGlass)
+                }
+            },
+            containerColor = pal.surfaceRaised,
+            titleContentColor = pal.ink,
+            textContentColor = pal.inkMutedOnGlass
+        )
+    }
+}
+
+/** 剧名分组抬头：剧名 + 集数，把「40 行一坨」收成一眼可读的分段。 */
+@Composable
+private fun ShowHeader(name: String, count: Int) {
+    val pal = LocalIVAN.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = Space.sm),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            name,
+            style = MaterialTheme.typography.titleMedium,
+            color = pal.ink,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        Spacer(Modifier.width(Space.sm))
+        Text(
+            "$count 集",
+            style = MaterialTheme.typography.labelSmall,
+            color = pal.inkMutedOnGlass
+        )
     }
 }
 
 @UnstableApi
 @Composable
-private fun DownloadRow(d: Download, onPlay: () -> Unit, onDelete: () -> Unit) {
+private fun DownloadRow(d: Download, onAction: () -> Unit, onDelete: () -> Unit) {
     val pal = LocalIVAN.current
-    val title = remember(d.request.id) { String(d.request.data ?: ByteArray(0)) }
+    val title = remember(d.request.id) { downloadTitle(d) }
     val done = d.state == Download.STATE_COMPLETED
     val interaction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     LiquidCard(
         modifier = Modifier
             .fillMaxWidth()
             .pressDip(interaction)
+            // 每行按状态都可点：完成播放 / 下载中暂停 / 暂停继续 / 失败重试 / 排队取消
             .clickable(
                 interactionSource = interaction,
                 indication = null
-            ) { if (done) onPlay() },
+            ) { onAction() },
         radius = Radius.lg
     ) {
         Column(Modifier.padding(Space.md + 2.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                // 剧名已经在分组抬头里，这里只显示集名，行内不再重复剧名
                 Text(
-                    title.ifEmpty { "未命名" },
+                    episodeNameOf(title),
                     style = MaterialTheme.typography.titleMedium,
                     color = pal.ink,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
-                Text(
-                    "删除",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = pal.inkMuted,
-                    modifier = Modifier
+                // 48dp 命中区：原来 22dp 且嵌在可点卡片里，误触就是删下载
+                Box(
+                    Modifier
                         .clip(RoundedCornerShape(Radius.sm))
                         .background(pal.surfaceRaised.copy(alpha = 0.7f))
                         .clickable { onDelete() }
-                        .padding(horizontal = Space.sm, vertical = Space.xs)
-                )
+                        .heightIn(min = 48.dp)
+                        .padding(horizontal = Space.lg),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "删除",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = pal.inkMutedOnGlass
+                    )
+                }
             }
             Spacer(Modifier.height(Space.sm))
             val status = when (d.state) {
                 Download.STATE_COMPLETED -> "已下载 · 点击离线播放"
-                Download.STATE_DOWNLOADING -> "下载中 ${(d.percentDownloaded).toInt()}%"
-                Download.STATE_QUEUED -> "排队中"
-                Download.STATE_FAILED -> "下载失败"
-                else -> "已暂停"
+                Download.STATE_DOWNLOADING -> "下载中 ${d.percentDownloaded.toInt()}% · 点击暂停"
+                Download.STATE_QUEUED -> "排队中 · 点击取消"
+                Download.STATE_FAILED -> "下载失败 · 点击重试"
+                else -> "已暂停 · 点击继续"
             }
-            Text(status, style = MaterialTheme.typography.labelSmall, color = pal.inkMuted)
+            Text(status, style = MaterialTheme.typography.labelSmall, color = pal.inkMutedOnGlass)
             if (!done && d.state == Download.STATE_DOWNLOADING) {
                 Spacer(Modifier.height(Space.sm))
                 ThinProgress(fraction = { d.percentDownloaded / 100f })
             }
         }
     }
+}
+
+/** 下载标题：下载时写入的是「剧名 · 集名」。 */
+@UnstableApi
+private fun downloadTitle(d: Download): String =
+    String(d.request.data ?: ByteArray(0)).ifEmpty { "未命名" }
+
+private const val TITLE_SEP = " · "
+
+/**
+ * 单条下载暂停用的 stopReason。
+ * media3 只暴露 `Download.STOP_REASON_NONE`（0），其余是应用自定义值，
+ * 官方 demo 用的就是 1 作为「被 App 暂停」。
+ */
+private const val STOP_REASON_PAUSED_BY_APP = 1
+
+/** 从「剧名 · 集名」里取剧名（没有分隔符就当整串是剧名）。 */
+private fun showNameOf(title: String): String {
+    val i = title.indexOf(TITLE_SEP)
+    return if (i > 0) title.substring(0, i) else title
+}
+
+/** 从「剧名 · 集名」里取集名（没有分隔符就原样返回）。 */
+private fun episodeNameOf(title: String): String {
+    val i = title.indexOf(TITLE_SEP)
+    return if (i > 0) title.substring(i + TITLE_SEP.length) else title
 }
