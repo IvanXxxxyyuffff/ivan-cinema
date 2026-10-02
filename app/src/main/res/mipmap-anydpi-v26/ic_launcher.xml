@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- 背景改成渐变矢量：原来的 @color/ivan_bg 是纯色，图标在深色桌面上没有边界 -->
-    <background android:drawable="@drawable/ic_launcher_background" />
-    <foreground android:drawable="@drawable/ic_launcher_foreground" />
-    <!-- Android 13+ 主题图标：跟随系统壁纸取色，缺了它用户开主题图标时会退回默认灰块 -->
-    <monochrome android:drawable="@drawable/ic_launcher_monochrome" />
-</adaptive-icon>
