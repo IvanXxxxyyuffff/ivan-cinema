@@ -62,6 +62,7 @@ import com.ivan.cinema.db.AppDb
 import com.ivan.cinema.db.WatchEntry
 import com.ivan.cinema.ui.components.LiquidBar
 import com.ivan.cinema.ui.components.ThinProgress
+import com.ivan.cinema.ui.components.press
 import com.ivan.cinema.ui.components.pressDip
 import com.ivan.cinema.ui.theme.LocalIVAN
 import com.ivan.cinema.ui.theme.Radius
@@ -210,12 +211,16 @@ fun HomeScreen(
                     .padding(horizontal = Space.lg, vertical = Space.sm + 2.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                // 按压反馈与点击必须共用同一个 interaction source：pressDip 订阅的是
+                // 传进来的这个 source，原来 clickable 又 remember 了另一个，
+                // 于是 pressed 永远不会为真，缩放永远不触发。
+                val searchInteraction = remember { MutableInteractionSource() }
                 LiquidBar(
                     modifier = Modifier
                         .weight(1f)
-                        .pressDip(remember { MutableInteractionSource() }, to = 0.98f)
+                        .pressDip(searchInteraction, to = press.card)
                         .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
+                            interactionSource = searchInteraction,
                             indication = null
                         ) { onSearch() },
                     radius = Radius.pill,
@@ -238,7 +243,9 @@ fun HomeScreen(
                         Text(
                             "搜索片名",
                             style = MaterialTheme.typography.bodyLarge,
-                            color = pal.inkMutedOnGlass,
+                            // 占位色对齐搜索页：inkMuted 在实色玻璃面上仍达 4.5:1，
+                            // 用 inkMutedOnGlass 会和图标/「筛选」拉开色差，两页不像同一控件
+                            color = pal.inkMuted,
                             modifier = Modifier.weight(1f)
                         )
                         Box(
@@ -317,10 +324,12 @@ fun HomeScreen(
                         Modifier
                             .fillMaxSize()
                             .background(
+                                // 底部压暗用底色自身（canvas 80%），不用纯黑 ——
+                                // 设计系统「没有纯黑」：纯黑会把大图下缘压出一条发灰的硬边
                                 Brush.verticalGradient(
                                     0f to Color.Transparent,
                                     0.55f to Color.Transparent,
-                                    1f to Color(0xCC000000)
+                                    1f to pal.canvas.copy(alpha = 0.80f)
                                 )
                             )
                     )
@@ -374,14 +383,20 @@ fun HomeScreen(
                         color = pal.ink,
                         modifier = Modifier.weight(1f)
                     )
+                    // 同上：pressDip 与 clickable 共用同一个 source，「更多」才会内缩。
+                    // 原实现 clickable 连 source 都没传，pressDip 订阅的 source 无人驱动。
+                    val moreInteraction = remember { MutableInteractionSource() }
                     Text(
                         "更多 ›",
                         style = MaterialTheme.typography.labelLarge,
                         color = pal.accent,
                         modifier = Modifier
-                            .pressDip(remember { MutableInteractionSource() }, to = 0.94f)
+                            .pressDip(moreInteraction, to = press.control)
                             .clip(RoundedCornerShape(Radius.pill))
-                            .clickable { onMore(tab) }
+                            .clickable(
+                                interactionSource = moreInteraction,
+                                indication = null
+                            ) { onMore(tab) }
                             .padding(horizontal = 9.dp, vertical = 15.dp)
                     )
                 }
@@ -526,7 +541,7 @@ private fun BigCard(item: VodItem, modifier: Modifier = Modifier, onClick: () ->
     val interaction = remember { MutableInteractionSource() }
     Column(
         modifier
-            .pressDip(interaction, to = 0.97f)
+            .pressDip(interaction, to = press.card)
             .clickable(interactionSource = interaction, indication = null, onClick = onClick)
     ) {
         Box(
@@ -615,7 +630,7 @@ fun WatchRow(entries: List<WatchEntry>, onOpen: (WatchEntry) -> Unit) {
                 Column(
                     Modifier
                         .width(120.dp)
-                        .pressDip(interaction, to = 0.96f)
+                        .pressDip(interaction, to = press.control)
                         .clip(RoundedCornerShape(Radius.md))
                         .clickable(interactionSource = interaction, indication = null) { onOpen(e) }
                 ) {

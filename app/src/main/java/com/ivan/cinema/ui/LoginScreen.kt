@@ -1,6 +1,7 @@
 package com.ivan.cinema.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -43,6 +44,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
@@ -56,8 +58,10 @@ import androidx.compose.ui.unit.sp
 import com.ivan.cinema.IVANApp
 import com.ivan.cinema.data.Account
 import com.ivan.cinema.ui.components.LiquidBar
+import com.ivan.cinema.ui.components.press
 import com.ivan.cinema.ui.components.pressDip
 import com.ivan.cinema.ui.theme.LocalIVAN
+import com.ivan.cinema.ui.theme.LoginWordmark
 import com.ivan.cinema.ui.theme.Radius
 import com.ivan.cinema.ui.theme.SolidColorBrushCompat
 import com.ivan.cinema.ui.theme.Space
@@ -91,11 +95,11 @@ fun LoginScreen(onDone: () -> Unit, onBack: () -> Unit = {}) {
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Spacer(Modifier.height(72.dp))
+            // 字标只认 theme 里的 LoginWordmark 这一处出处（26sp / 加粗 / 4sp 字距）；
+            // 原来在这儿手写了一遍同样参数，设计一改两边就会漂
             Text(
                 "IVAN CINEMA",
-                fontSize = 26.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 4.sp,
+                style = LoginWordmark,
                 maxLines = 1,
                 color = pal.ink
             )
@@ -138,7 +142,7 @@ fun LoginScreen(onDone: () -> Unit, onBack: () -> Unit = {}) {
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .pressDip(btnInteraction, to = 0.98f)
+                    .pressDip(btnInteraction, to = press.card)
                     .clip(RoundedCornerShape(Radius.lg))
                     .background(
                         if (busy) SolidColorBrushCompat(Color.White.copy(alpha = 0.14f))
@@ -196,7 +200,9 @@ fun LoginScreen(onDone: () -> Unit, onBack: () -> Unit = {}) {
             )
         }
 
-        // 从设置页进来只能靠系统返回键 —— 这里补一个左上角返回（与详情页同款）
+        // 从设置页进来只能靠系统返回键 —— 这里补一个左上角返回。
+        // 与详情/分类/收藏/筛选页的返回胶囊逐项对齐：48dp / 黑 55% / 1px 白描边 / 22dp 白箭头。
+        // 原实现是 34% 且没有描边，浮在模糊背景上比其它页明显偏淡、像半成品。
         Box(
             Modifier
                 .align(Alignment.TopStart)
@@ -204,7 +210,8 @@ fun LoginScreen(onDone: () -> Unit, onBack: () -> Unit = {}) {
                 .padding(start = Space.md, top = Space.sm)
                 .size(48.dp)
                 .clip(RoundedCornerShape(Radius.pill))
-                .background(Color.Black.copy(alpha = 0.34f))
+                .background(Color.Black.copy(alpha = 0.55f))
+                .border(1.dp, Color.White.copy(alpha = 0.22f), RoundedCornerShape(Radius.pill))
                 .clickable { onBack() },
             contentAlignment = Alignment.Center
         ) {
@@ -290,12 +297,15 @@ private fun LoginField(
 /** SVIP 金色徽标（参考 IVAN MUSIC 的会员身份位）。 */
 @Composable
 fun SvipBadge() {
+    val pal = LocalIVAN.current
     Box(
         Modifier
             .clip(RoundedCornerShape(Radius.sm))
             .background(
+                // 品牌金只此一处出处：pal.brand（= BrandGold）。末端向 ink 靠 18% 做出体积，
+                // 不再自造第二组金色 —— 原来的 #E8B23A→#B8871F 是把同一件事又写了一遍。
                 Brush.horizontalGradient(
-                    listOf(Color(0xFFE8B23A), Color(0xFFB8871F))
+                    listOf(pal.brand, lerp(pal.brand, pal.ink, 0.18f))
                 )
             )
             .padding(horizontal = 6.dp, vertical = 2.dp)
@@ -305,7 +315,9 @@ fun SvipBadge() {
             fontSize = 10.sp,
             fontWeight = FontWeight.Bold,
             letterSpacing = 0.6.sp,
-            color = Color(0xFF2A1B02)
+            // 金字上的墨色用 accentInk：深色底（浅色主题）下是白字、亮金底（深色主题）下是近黑，
+            // 两种主题都 ≥4.5:1；原来的 #2A1B02 在浅色主题的深金底上对比不足。
+            color = pal.accentInk
         )
     }
 }

@@ -41,8 +41,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.SubcomposeAsyncImage
 import com.ivan.cinema.data.MergedVod
+import com.ivan.cinema.ui.components.press
 import com.ivan.cinema.ui.components.pressDip
 import com.ivan.cinema.ui.theme.LocalIVAN
+import com.ivan.cinema.ui.theme.MotionPrefs
 import com.ivan.cinema.ui.theme.Radius
 import com.ivan.cinema.ui.theme.Space
 
@@ -61,7 +63,8 @@ fun PosterCard(
 
     Column(
         modifier = modifier
-            .pressDip(interaction)
+            // 海报砖是 card 档目标（默认 control 对整块海报太浅，点下去几乎看不出）
+            .pressDip(interaction, to = press.card)
             .clip(RoundedCornerShape(Radius.md))
             .clickable(interactionSource = interaction, indication = null, onClick = onClick)
     ) {
@@ -87,29 +90,35 @@ fun PosterCard(
                     // 一眼就能读出"正在加载"，而不是一块说不清的灰盒子；
                     // 失败仍退到可见的 FilmTile，两者不会混淆。
                     loading = {
-                        val breathe = rememberInfiniteTransition(label = "posterLoading")
-                        val a by breathe.animateFloat(
-                            initialValue = 0.45f,
-                            targetValue = 0.9f,
-                            animationSpec = infiniteRepeatable(
-                                animation = tween(durationMillis = 900, easing = LinearEasing),
-                                repeatMode = RepeatMode.Reverse
-                            ),
-                            label = "posterLoadingAlpha"
+                        val face = Brush.verticalGradient(
+                            listOf(
+                                pal.surfaceRaised,
+                                pal.surfaceRaised.copy(alpha = 0.68f)
+                            )
                         )
-                        Box(
-                            Modifier
-                                .fillMaxSize()
-                                .graphicsLayer { alpha = a }
-                                .background(
-                                    Brush.verticalGradient(
-                                        listOf(
-                                            pal.surfaceRaised,
-                                            pal.surfaceRaised.copy(alpha = 0.68f)
-                                        )
-                                    )
-                                )
-                        )
+                        // 减少动效：无限「呼吸」循环必须停。镜像 PlayingBars 的写法 ——
+                        // 静态占位面仍然看得见「在加载」，只是不再每 900ms 闪一次，
+                        // 否则开了减少动效的用户照样被满屏循环闪烁影响。
+                        if (MotionPrefs.reduce) {
+                            Box(Modifier.fillMaxSize().background(face))
+                        } else {
+                            val breathe = rememberInfiniteTransition(label = "posterLoading")
+                            val a by breathe.animateFloat(
+                                initialValue = 0.45f,
+                                targetValue = 0.9f,
+                                animationSpec = infiniteRepeatable(
+                                    animation = tween(durationMillis = 900, easing = LinearEasing),
+                                    repeatMode = RepeatMode.Reverse
+                                ),
+                                label = "posterLoadingAlpha"
+                            )
+                            Box(
+                                Modifier
+                                    .fillMaxSize()
+                                    .graphicsLayer { alpha = a }
+                                    .background(face)
+                            )
+                        }
                     },
                     error = { FilmTile(Modifier.fillMaxSize()) }
                 )

@@ -75,6 +75,7 @@ import com.ivan.cinema.db.FollowEntry
 import com.ivan.cinema.db.WatchEntry
 import com.ivan.cinema.ui.components.LiquidCard
 import com.ivan.cinema.ui.components.ThinProgress
+import com.ivan.cinema.ui.components.press
 import com.ivan.cinema.ui.components.pressDip
 import com.ivan.cinema.ui.theme.LocalIVAN
 import com.ivan.cinema.ui.theme.Radius
@@ -150,8 +151,9 @@ fun FollowScreen(
                         else -> "每天检查一次更新；通知权限未开启，更新不会提醒"
                     },
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (!notifAllowed && follows.isNotEmpty()) pal.dangerOnGlass
-                    else pal.inkMutedOnGlass
+                    // 这段副标题直接落在页面底色上（不在卡片里），用 canvas 系令牌
+                    color = if (!notifAllowed && follows.isNotEmpty()) pal.danger
+                    else pal.inkMuted
                 )
             }
         }
@@ -235,7 +237,7 @@ private fun FollowRow(
         Row(
             Modifier
                 .fillMaxWidth()
-                .pressDip(openInteraction, to = 0.97f)
+                .pressDip(openInteraction, to = press.card)
                 .clickable(interactionSource = openInteraction, indication = null) { onOpen() }
                 .padding(Space.md),
             verticalAlignment = Alignment.CenterVertically
@@ -280,7 +282,7 @@ private fun FollowRow(
                 style = MaterialTheme.typography.labelLarge,
                 color = pal.ink,
                 modifier = Modifier
-                    .pressDip(unwatch, to = 0.94f)
+                    .pressDip(unwatch, to = press.control)
                     .clip(RoundedCornerShape(Radius.pill))
                     .background(Color.Transparent)
                     .border(1.dp, pal.hairline, RoundedCornerShape(Radius.pill))
@@ -360,7 +362,7 @@ fun MyScreen(
                                 style = MaterialTheme.typography.labelLarge,
                                 color = pal.ink,
                                 modifier = Modifier
-                                    .pressDip(clearInteraction, to = 0.94f)
+                                    .pressDip(clearInteraction, to = press.control)
                                     .clip(RoundedCornerShape(Radius.pill))
                                     .background(Color.Transparent)
                                     .border(1.dp, pal.hairline, RoundedCornerShape(Radius.pill))
@@ -492,7 +494,7 @@ private fun IdentityCard(onLogin: () -> Unit) {
                     style = MaterialTheme.typography.labelLarge,
                     color = if (account == null) pal.accentInk else pal.ink,
                     modifier = Modifier
-                        .pressDip(action, to = 0.94f)
+                        .pressDip(action, to = press.control)
                         .clip(RoundedCornerShape(Radius.pill))
                         .background(if (account == null) pal.accent else Color.Transparent)
                         .then(
@@ -517,7 +519,7 @@ private fun IdentityCard(onLogin: () -> Unit) {
                         style = MaterialTheme.typography.labelLarge,
                         color = pal.ink,
                         modifier = Modifier
-                            .pressDip(svipAction, to = 0.94f)
+                            .pressDip(svipAction, to = press.control)
                             .clip(RoundedCornerShape(Radius.pill))
                             .background(Color.Transparent)
                             .border(1.dp, pal.hairline, RoundedCornerShape(Radius.pill))
@@ -533,7 +535,7 @@ private fun IdentityCard(onLogin: () -> Unit) {
                         style = MaterialTheme.typography.labelLarge,
                         color = pal.dangerOnGlass,
                         modifier = Modifier
-                            .pressDip(logoutAction, to = 0.94f)
+                            .pressDip(logoutAction, to = press.control)
                             .clip(RoundedCornerShape(Radius.pill))
                             .background(Color.Transparent)
                             .border(1.dp, pal.hairline, RoundedCornerShape(Radius.pill))
@@ -601,7 +603,7 @@ private fun WatchHistoryRow(
         Row(
             Modifier
                 .weight(1f)
-                .pressDip(openInteraction, to = 0.97f)
+                .pressDip(openInteraction, to = press.card)
                 .clip(RoundedCornerShape(Radius.md))
                 .clickable(interactionSource = openInteraction, indication = null) { onOpen() }
                 .padding(vertical = Space.xs),
@@ -652,7 +654,7 @@ private fun WatchHistoryRow(
         Box(
             Modifier
                 .size(48.dp)
-                .pressDip(deleteInteraction, to = 0.94f)
+                .pressDip(deleteInteraction, to = press.control)
                 .clip(RoundedCornerShape(Radius.pill))
                 .clickable(interactionSource = deleteInteraction, indication = null) { onDelete() },
             contentAlignment = Alignment.Center
@@ -681,7 +683,7 @@ private fun EntryRow(
         Row(
             Modifier
                 .fillMaxWidth()
-                .pressDip(interaction, to = 0.97f)
+                .pressDip(interaction, to = press.card)
                 .clickable(interactionSource = interaction, indication = null) { onClick() }
                 .heightIn(min = 48.dp)
                 .padding(Space.md + 2.dp),

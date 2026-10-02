@@ -57,3 +57,24 @@ private fun FlatBackdrop() {
             )
     )
 }
+
+/**
+ * 推入页根容器的不透明背景。
+ *
+ * 推入页是画在根 tab 之上的独立一层 —— 如果自己不带不透明底，下层内容会直接透上来。
+ * 之前设置页/下载页是根 tab（坐在全局背景上）所以没暴露；改成推入页之后立刻出问题
+ * （实拍确认过「设置页错乱」：两个页面叠在一起）。
+ *
+ * 注意要放在 `statusBarsPadding()` 之前，这样状态栏那条也一起铺上色。
+ */
+@Composable
+fun Modifier.opaqueScreenBackground(): Modifier {
+    val base = DarkPalette.canvas
+    return this.background(
+        Brush.verticalGradient(
+            0f to Color(0xFF14121A),
+            0.35f to base,
+            1f to base
+        )
+    )
+}

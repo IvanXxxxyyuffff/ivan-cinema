@@ -43,7 +43,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.ivan.cinema.BuildConfig
@@ -53,6 +52,7 @@ import com.ivan.cinema.data.ApkUpdater
 import com.ivan.cinema.data.UpdateChecker
 import com.ivan.cinema.data.UpdateInfo
 import com.ivan.cinema.ui.components.LiquidCard
+import com.ivan.cinema.ui.components.press
 import com.ivan.cinema.ui.components.pressDip
 import com.ivan.cinema.ui.theme.LocalIVAN
 import com.ivan.cinema.ui.theme.MotionPrefs
@@ -105,7 +105,11 @@ fun SettingsScreen(contentBottomPadding: Dp = 0.dp, onBack: () -> Unit = {}) {
             start = Space.lg, end = Space.lg, top = 0.dp, bottom = contentBottomPadding
         ),
         verticalArrangement = Arrangement.spacedBy(Space.md),
-        modifier = Modifier.fillMaxSize().statusBarsPadding()
+        modifier = Modifier
+            .fillMaxSize()
+            // 推入页必须自带不透明底，否则下层的「我的」页会透上来（实拍确认过）
+            .opaqueScreenBackground()
+            .statusBarsPadding()
     ) {
         // ── 标题 + 返回（二级页必须有可见返回入口，和详情页同款胶囊）──
         item {
@@ -117,6 +121,8 @@ fun SettingsScreen(contentBottomPadding: Dp = 0.dp, onBack: () -> Unit = {}) {
             ) {
                 Box(
                     Modifier
+                        // 与详情页/片单页返回胶囊同款间距（它们都用 padding(end = Space.sm)）
+                        .padding(end = Space.sm)
                         .size(48.dp)
                         .clip(RoundedCornerShape(Radius.pill))
                         .background(Color.Black.copy(alpha = 0.55f))
@@ -131,7 +137,6 @@ fun SettingsScreen(contentBottomPadding: Dp = 0.dp, onBack: () -> Unit = {}) {
                         modifier = Modifier.size(22.dp)
                     )
                 }
-                Spacer(Modifier.width(Space.md))
                 Text(
                     "设置",
                     style = MaterialTheme.typography.headlineSmall,
@@ -161,11 +166,15 @@ fun SettingsScreen(contentBottomPadding: Dp = 0.dp, onBack: () -> Unit = {}) {
                                     Box(
                                         Modifier
                                             .clip(RoundedCornerShape(Radius.sm))
-                                            // 白字压亮红只有 3.4:1，换成深一档的红
-                                            .background(Color(0xFFB04A4A))
+                                            // 与海报角标同一套令牌，全 App 徽章观感一致
+                                            .background(pal.badge)
                                             .padding(horizontal = 6.dp, vertical = 2.dp)
                                     ) {
-                                        Text("新版本", fontSize = 10.sp, color = Color.White)
+                                        Text(
+                                            "新版本",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = pal.badgeInk
+                                        )
                                     }
                                 }
                             }
@@ -183,7 +192,7 @@ fun SettingsScreen(contentBottomPadding: Dp = 0.dp, onBack: () -> Unit = {}) {
                             style = MaterialTheme.typography.labelLarge,
                             color = if (update != null) pal.accentInk else pal.ink,
                             modifier = Modifier
-                                .pressDip(checkAction, to = 0.94f)
+                                .pressDip(checkAction, to = press.control)
                                 .clip(RoundedCornerShape(Radius.pill))
                                 .background(if (update != null) pal.accent else Color.Transparent)
                                 .then(
@@ -308,7 +317,7 @@ fun SettingsScreen(contentBottomPadding: Dp = 0.dp, onBack: () -> Unit = {}) {
                         style = MaterialTheme.typography.labelLarge,
                         color = pal.ink,
                         modifier = Modifier
-                            .pressDip(clearInteraction, to = 0.94f)
+                            .pressDip(clearInteraction, to = press.control)
                             .clip(RoundedCornerShape(Radius.pill))
                             .background(Color.Transparent)
                             .border(1.dp, pal.hairline, RoundedCornerShape(Radius.pill))
@@ -349,7 +358,7 @@ fun SettingsScreen(contentBottomPadding: Dp = 0.dp, onBack: () -> Unit = {}) {
                         style = MaterialTheme.typography.labelLarge,
                         color = pal.ink,
                         modifier = Modifier
-                            .pressDip(clearInteraction, to = 0.94f)
+                            .pressDip(clearInteraction, to = press.control)
                             .clip(RoundedCornerShape(Radius.pill))
                             .background(Color.Transparent)
                             .border(1.dp, pal.hairline, RoundedCornerShape(Radius.pill))

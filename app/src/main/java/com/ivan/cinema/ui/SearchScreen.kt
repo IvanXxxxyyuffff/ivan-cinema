@@ -64,12 +64,12 @@ import com.ivan.cinema.db.AppDb
 import com.ivan.cinema.db.SearchEntry
 import com.ivan.cinema.ui.components.DefaultLiquid
 import com.ivan.cinema.ui.components.LiquidBar
+import com.ivan.cinema.ui.components.LocalPortal
 import com.ivan.cinema.ui.components.PortalTo
 import com.ivan.cinema.ui.components.StaggerIn
 import com.ivan.cinema.ui.components.liquidGlass
 import com.ivan.cinema.ui.components.portalIn
 import com.ivan.cinema.ui.components.portalReveal
-import com.ivan.cinema.ui.components.portalRevealProgress
 import com.ivan.cinema.ui.components.press
 import com.ivan.cinema.ui.components.pressDip
 import com.ivan.cinema.ui.theme.LocalIVAN
@@ -93,6 +93,7 @@ fun SearchScreen(
     columns: Int,
     onOpenDetail: (MergedVod) -> Unit,
     onFilter: () -> Unit = {},
+    onClose: () -> Unit = {},
     contentBottomPadding: Dp = 0.dp
 ) {
     val pal = LocalIVAN.current
@@ -165,29 +166,43 @@ fun SearchScreen(
 
     Column(Modifier.fillMaxSize()) {
         // ── 搜索框：裁剪揭示（右缘固定，向左展开）──
-        Box(
+        Row(
             Modifier
                 .fillMaxWidth()
                 .statusBarsPadding()
                 .padding(horizontal = Space.lg, vertical = Space.md)
-                .portalReveal()
+                .portalReveal(),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            val innerAlpha = portalRevealProgress()
-            LiquidBar(modifier = Modifier.fillMaxWidth(), radius = Radius.pill, elevated = true) {
+            // 只在组合期取一次时间轴 State（读 CompositionLocal 本身是稳定的，不会重组）；
+            // 真正的数值放到下面 graphicsLayer 的绘制块里读 —— 组合期读会让整棵搜索框子树
+            // 在 560ms 转场里逐帧重组。等价于 portalRevealProgress() 的 [0.28,0.63] 映射。
+            val portal = LocalPortal.current
+            // 与首页搜索栏保持完全同款：同样 48dp 高、同样的图标尺寸与颜色、同样的内边距。
+            // 之前这里是 43dp 且图标是金色，点进来像换了个 App（实拍对比确认）。
+            LiquidBar(
+                modifier = Modifier.weight(1f),
+                radius = Radius.pill,
+                elevated = true
+            ) {
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .graphicsLayer { alpha = innerAlpha }
-                        .padding(horizontal = Space.md + 2.dp, vertical = Space.sm + 3.dp),
+                        .height(48.dp)
+                        .graphicsLayer {
+                            val raw = ((portal.value - 0.28f) / 0.35f).coerceIn(0f, 1f)
+                            alpha = raw
+                        }
+                        .padding(horizontal = Space.md + 2.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
                         Icons.Rounded.Search,
                         contentDescription = null,
-                        tint = pal.accent,
-                        modifier = Modifier.size(20.dp)
+                        tint = pal.inkMuted,
+                        modifier = Modifier.size(18.dp)
                     )
-                    Spacer(Modifier.width(Space.sm + 2.dp))
+                    Spacer(Modifier.width(Space.sm))
                     BasicTextField(
                         value = query,
                         onValueChange = { q ->
@@ -227,7 +242,7 @@ fun SearchScreen(
                             ) {
                                 if (query.isEmpty()) {
                                     Text(
-                                        "搜索片名，20 个源同时出动",
+                                        "搜索片名",
                                         style = MaterialTheme.typography.bodyLarge,
                                         color = pal.inkMuted
                                     )
@@ -260,6 +275,21 @@ fun SearchScreen(
                     }
                 }
             }
+            Spacer(Modifier.width(Space.sm))
+            // 搜索层此前没有任何关闭入口，只能靠系统返回键 —— 补一个「取消」
+            val cancelInteraction = remember { MutableInteractionSource() }
+            Text(
+                "取消",
+                style = MaterialTheme.typography.labelLarge,
+                color = pal.ink,
+                modifier = Modifier
+                    .pressDip(cancelInteraction, to = press.control)
+                    .clip(RoundedCornerShape(Radius.pill))
+                    .clickable(interactionSource = cancelInteraction, indication = null) {
+                        onClose()
+                    }
+                    .padding(horizontal = 12.dp, vertical = 15.dp)
+            )
         }
 
         if (searching) {
@@ -411,12 +441,16 @@ fun SearchScreen(
                                                     contentDescription = "删除",
                                                     tint = pal.inkMuted.copy(alpha = 0.7f),
                                                     modifier = Modifier
-                                                        .size(18.dp)
+                                                        // 48dp 命中区（原来 18dp 直接挂在可点行上，
+                                                        // 删历史是破坏性操作，手指按不准就是误删）
+                                                        .size(48.dp)
                                                         .clickable {
                                                             scope.launch(Dispatchers.IO) {
                                                                 AppDb.get(IVANApp.app).searchDao().delete(word)
                                                             }
                                                         }
+                                                        // 视觉仍保持 18dp 图标
+                                                        .padding(15.dp)
                                                 )
                                             }
                                         }
@@ -435,14 +469,15 @@ fun SearchScreen(
                             color = pal.inkMuted,
                             modifier = Modifier
                                 .padding(horizontal = Space.lg)
-                                .pressDip(clearInteraction, to = 0.94f)
+                                .pressDip(clearInteraction, to = press.control)
                                 .clip(RoundedCornerShape(Radius.pill))
                                 .clickable(interactionSource = clearInteraction, indication = null) {
                                     scope.launch(Dispatchers.IO) {
                                         AppDb.get(IVANApp.app).searchDao().clear()
                                     }
                                 }
-                                .padding(horizontal = Space.sm, vertical = Space.xs)
+                                // labelSmall 行高 ~16dp + 16*2 = 48dp，达最小触摸目标（原来仅 ~22dp）
+                                .padding(horizontal = Space.sm, vertical = 16.dp)
                         )
                     }
                 }

@@ -1,7 +1,10 @@
 package com.ivan.cinema.ui.components
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -15,6 +18,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
@@ -27,10 +31,15 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.ivan.cinema.ui.theme.LocalIVAN
 import com.ivan.cinema.ui.theme.Radius
+import com.ivan.cinema.ui.theme.SolidColorBrushCompat
+import com.ivan.cinema.ui.theme.Space
+import com.ivan.cinema.ui.theme.accentBrush
 import kotlin.math.PI
 import kotlin.math.cos
 
@@ -48,7 +57,15 @@ import kotlin.math.cos
  * 玻璃透的就是它 —— 黑底上的玻璃永远是灰矩形。
  */
 
-/** 玻璃五层参数。 */
+/**
+ * 玻璃五层参数。
+ *
+ * 注意：liquidGlass 现在是**不透明实色引擎**，实际只读两个字段 ——
+ * [dropShadow]（外投影）与 [topLine]（顶边 1px 亮线，由 GlassTopLine 消费）。
+ * 其余字段（bodyTop / bodyBottom / edgeHi / edgeLo / sheen / innerShadow）属于早期
+ * 半透明玻璃实现，当前引擎不再读取；保留它们只为不破坏 NavLiquid / ImmersiveLiquid
+ * 等预设，新代码不要指望这些字段产生效果。
+ */
 data class LiquidParams(
     val bodyTop: Color = Color(0x42FFFFFF),
     val bodyBottom: Color = Color(0x24FFFFFF),
@@ -225,6 +242,71 @@ fun LiquidPill(
     )
 }
 
+/**
+ * 描边 / 选中胶囊的唯一实现 —— 线路、选集、追剧、收藏等全部走这里。
+ *
+ * 全 App 只有两种状态：未选中 = 透明底 + 1px 发丝描边；选中 = 香槟金填充。
+ * 之前各处自己拼 background / border，出现「有的有描边、有的只有半透明白底」的分裂，
+ * 统一到这里后状态语义只由 [selected] 决定。
+ *
+ * 命中区由调用方通过 [verticalPadding] 保证（labelLarge 18dp + 15*2 = 48dp）。
+ *
+ * @param onLongClick 传入时改用 combinedClickable（选集长按下载）。
+ * @param selectedFill 选中填充，默认走 [accentBrush]；需要实色时可覆盖。
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun SelectPill(
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    onLongClick: (() -> Unit)? = null,
+    horizontalPadding: Dp = Space.md,
+    verticalPadding: Dp = 15.dp,
+    selectedFill: Brush? = null,
+    content: @Composable BoxScope.() -> Unit,
+) {
+    val pal = LocalIVAN.current
+    val shape = remember { RoundedCornerShape(Radius.pill) }
+    val interaction = remember { MutableInteractionSource() }
+    // semantics 里的 selected 是接收者属性，先取到局部变量避免与参数同名歧义
+    val sel = selected
+    Box(
+        modifier
+            .pressDip(interaction, to = press.control)
+            .clip(shape)
+            .background(
+                if (sel) (selectedFill ?: accentBrush(pal))
+                else SolidColorBrushCompat(Color.Transparent)
+            )
+            // 选中时由填充本身表达状态，未选中才需要描边把它从背景里拎出来
+            .then(if (sel) Modifier else Modifier.border(1.dp, pal.hairline, shape))
+            .then(
+                if (onLongClick != null) {
+                    Modifier.combinedClickable(
+                        enabled = enabled,
+                        interactionSource = interaction,
+                        indication = null,
+                        onClick = onClick,
+                        onLongClick = onLongClick,
+                    )
+                } else {
+                    Modifier.clickable(
+                        enabled = enabled,
+                        interactionSource = interaction,
+                        indication = null,
+                        onClick = onClick,
+                    )
+                }
+            )
+            .semantics { this.selected = sel }
+            .padding(horizontal = horizontalPadding, vertical = verticalPadding),
+        contentAlignment = Alignment.Center,
+        content = content,
+    )
+}
+
 /** 横条（搜索框、顶栏）。 */
 @Composable
 fun LiquidBar(
@@ -271,9 +353,10 @@ fun LiquidNavBar(
                 val interaction = remember { MutableInteractionSource() }
                 Row(
                     Modifier
-                        .pressDip(interaction, to = 0.94f)
+                        .pressDip(interaction, to = press.control)
                         .clip(RoundedCornerShape(Radius.pill))
-                        .background(if (on) Color.White.copy(alpha = 0.16f) else Color.Transparent)
+                        // 选中项：香槟金 14% 淡底 —— 底栏是全 App 唯一允许用强调色标状态的地方
+                        .background(if (on) pal.accent.copy(alpha = 0.14f) else Color.Transparent)
                         .clickable(interactionSource = interaction, indication = null) { onSelect(i) }
                         // 14dp 让点击目标达到 48dp（原来 8dp 只有 36dp）
                         .padding(horizontal = 16.dp, vertical = 14.dp),
@@ -284,15 +367,16 @@ fun LiquidNavBar(
                         item.icon,
                         // 图标已经有常驻文字标签，读屏再念一遍会变成「首页 首页」
                         contentDescription = null,
-                        tint = if (on) Color.White else Color.White.copy(alpha = 0.80f),
+                        // 选中态用强调色（#D9BC82 在 surfaceRaised 上 >4.5:1）
+                        tint = if (on) pal.accent else Color.White.copy(alpha = 0.80f),
                         modifier = Modifier.height(20.dp)
                     )
                     // 文字常驻（未选中也显示）—— 只显示图标用户认不出哪个是「下载」
                     androidx.compose.material3.Text(
                         item.label,
                         style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
-                        // 0.62 在玻璃上只有 3.6:1，够不到正文 4.5:1
-                        color = if (on) Color.White else Color.White.copy(alpha = 0.80f)
+                        // 0.62 在玻璃上只有 3.6:1，够不到正文 4.5:1；选中态直接用强调色
+                        color = if (on) pal.accent else Color.White.copy(alpha = 0.80f)
                     )
                 }
             }

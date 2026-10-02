@@ -55,6 +55,7 @@ import com.ivan.cinema.data.SourceHealth
 import com.ivan.cinema.data.SourceHit
 import com.ivan.cinema.data.VodItem
 import com.ivan.cinema.ui.components.StaggerIn
+import com.ivan.cinema.ui.components.press
 import com.ivan.cinema.ui.components.pressDip
 import com.ivan.cinema.ui.theme.LocalIVAN
 import com.ivan.cinema.ui.theme.Radius
@@ -233,11 +234,13 @@ fun FilterScreen(
                 contentDescription = "搜索",
                 tint = pal.ink,
                 modifier = Modifier
-                    .size(44.dp)
-                    .pressDip(interaction, to = 0.92f)
+                    // 48dp 命中区（原来 44dp，差 4dp 就够不着最小触摸目标）
+                    .size(48.dp)
+                    .pressDip(interaction, to = press.control)
                     .clip(RoundedCornerShape(Radius.pill))
                     .clickable(interactionSource = interaction, indication = null) { onSearch() }
-                    .padding(10.dp)
+                    // 13*2 = 26dp 内缩，图标仍为 22dp
+                    .padding(13.dp)
             )
         }
 
@@ -382,7 +385,7 @@ private fun FilterRow(
                     style = MaterialTheme.typography.bodyLarge,
                     color = if (on) pal.accent else pal.inkMuted,
                     modifier = Modifier
-                        .pressDip(interaction, to = 0.94f)
+                        .pressDip(interaction, to = press.control)
                         .clip(RoundedCornerShape(Radius.pill))
                         .clickable(interactionSource = interaction, indication = null) { onPick(opt) }
                         // bodyLarge 21dp + 14*2 = 49dp，达最小触摸目标（原来 4dp → 29dp）

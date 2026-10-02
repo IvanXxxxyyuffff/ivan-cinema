@@ -7,9 +7,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -84,6 +86,16 @@ sealed class Page {
     data object Settings : Page()
 }
 
+/**
+ * 页面转场时长（毫秒）—— 仅描述「正常态」手感。
+ * 「减少动效」开启时这些时长一律不生效：直接 snap 到位，不做 300ms 滑动 / 560ms 交叉淡。
+ * 抽成常量是为了让三处转场共用同一份时长，避免散落的魔法数字被改歪。
+ */
+private const val PUSH_DURATION_MS = 300
+private const val POP_DURATION_MS = 200
+private const val SEARCH_OPEN_DURATION_MS = 560
+private const val SEARCH_CLOSE_DURATION_MS = 480
+
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -141,6 +153,20 @@ class MainActivity : ComponentActivity() {
         val wide = LocalConfiguration.current.screenWidthDp >= 840
         val columns = if (wide) 6 else 3
 
+        // 转场动效规格：正常态沿用原时长与缓动（推入减速、弹出加速），手感不变；
+        // 「减少动效」开启时改用 snap() 直接到位 —— 之前这里写死 tween，
+        // 开了减少动效页面仍要滑 300ms、搜索层仍要淡 560ms。
+        // 读 MotionPrefs.reduce 是快照读，设置页开关一改立刻生效。
+        val reduceMotion = MotionPrefs.reduce
+        val pushSpec: AnimationSpec<Float> =
+            if (reduceMotion) snap() else tween(PUSH_DURATION_MS, easing = FastOutSlowInEasing)
+        val popSpec: AnimationSpec<Float> =
+            if (reduceMotion) snap() else tween(POP_DURATION_MS, easing = FastOutLinearInEasing)
+        val searchOpenSpec: AnimationSpec<Float> =
+            if (reduceMotion) snap() else tween(SEARCH_OPEN_DURATION_MS, easing = LinearEasing)
+        val searchCloseSpec: AnimationSpec<Float> =
+            if (reduceMotion) snap() else tween(SEARCH_CLOSE_DURATION_MS, easing = LinearEasing)
+
         // 迷你播放条出现时，列表底部要再让出一条，否则最后一行会被它压住
         val contentBottom = if (com.ivan.cinema.data.NowPlaying.entry.value != null) 196.dp else 168.dp
 
@@ -155,7 +181,7 @@ class MainActivity : ComponentActivity() {
                 pushState.value = 0f
                 push.animateTo(
                     targetValue = 1f,
-                    animationSpec = tween(300, easing = FastOutSlowInEasing),
+                    animationSpec = pushSpec,
                     block = { pushState.value = value }
                 )
                 pushAnimating = false
@@ -168,7 +194,7 @@ class MainActivity : ComponentActivity() {
             scope.launch {
                 push.animateTo(
                     targetValue = 0f,
-                    animationSpec = tween(200, easing = FastOutLinearInEasing),
+                    animationSpec = popSpec,
                     block = { pushState.value = value }
                 )
                 stack.removeAt(stack.lastIndex)
@@ -186,7 +212,7 @@ class MainActivity : ComponentActivity() {
             scope.launch {
                 portalAnim.animateTo(
                     targetValue = 1f,
-                    animationSpec = tween(560, easing = LinearEasing),
+                    animationSpec = searchOpenSpec,
                     block = { portalState.value = value }
                 )
                 searchAnimating = false
@@ -199,7 +225,7 @@ class MainActivity : ComponentActivity() {
             scope.launch {
                 portalAnim.animateTo(
                     targetValue = 0f,
-                    animationSpec = tween(480, easing = LinearEasing),
+                    animationSpec = searchCloseSpec,
                     block = { portalState.value = value }
                 )
                 searchOpen = false
@@ -342,6 +368,7 @@ class MainActivity : ComponentActivity() {
                             columns = columns,
                             onOpenDetail = ::openDetail,
                             onFilter = { pushPage(Page.Filter) },
+                            onClose = { closeSearch() },
                             contentBottomPadding = contentBottom
                         )
                     }
@@ -403,7 +430,8 @@ class MainActivity : ComponentActivity() {
                             )
                             is Page.Downloads -> DownloadScreen(
                                 onPlayLocal = { url, title -> playDirect(url, title) },
-                                contentBottomPadding = 32.dp
+                                contentBottomPadding = 32.dp,
+                                onBack = { popPage() }
                             )
                             is Page.Settings -> SettingsScreen(
                                 contentBottomPadding = 32.dp,
@@ -468,6 +496,26 @@ class MainActivity : ComponentActivity() {
                             .padding(start = 20.dp, end = 20.dp, bottom = 104.dp)
                     )
                 }
+            }
+
+            // ── 启动更新提示 ──
+            // 之前只有一个设置页角标，不主动进设置就永远看不到；20 个人用下来会一直停在旧版本。
+            // 「以后再说」按 versionCode 记一次，同一个版本不重复打扰。
+            val updateInfo = com.ivan.cinema.data.UpdateChecker.latest.value
+            var updateDismissed by remember { mutableStateOf(false) }
+            if (updateInfo != null &&
+                !updateDismissed &&
+                com.ivan.cinema.ui.UpdatePromptPrefs.dismissed(applicationContext) != updateInfo.versionCode
+            ) {
+                com.ivan.cinema.ui.UpdatePrompt(
+                    info = updateInfo,
+                    onDismiss = {
+                        updateDismissed = true
+                        com.ivan.cinema.ui.UpdatePromptPrefs.dismiss(
+                            applicationContext, updateInfo.versionCode
+                        )
+                    }
+                )
             }
         }
     }

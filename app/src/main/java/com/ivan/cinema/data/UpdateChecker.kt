@@ -67,20 +67,29 @@ object UpdateChecker {
         if (!f.isFile) null else parse(f.readText())
     }.getOrNull()
 
-    /** 并发打所有镜像，取**最先成功返回**的那个；VPN 时官方直连优先，否则镜像优先。 */
+    /**
+     * 并发打所有镜像，**第一个成功返回的立刻用掉**。
+     *
+     * 原实现是 `repeat(ordered.size) { ch.receive() }` —— 它要把 5 个结果全部收完才返回，
+     * 等于整体耗时由**最慢**的那个镜像决定，和「谁快用谁」的注释正好相反。
+     * 现在收到第一个非空结果就 break，并取消其余请求。
+     */
     private suspend fun fetchFastestMirror(vpn: Boolean): UpdateInfo? = coroutineScope {
         val ordered = if (vpn) MIRRORS else MIRRORS.drop(1) + MIRRORS.first()
-        val ch = Channel<UpdateInfo?>(ordered.size)
-        ordered.forEach { url ->
-            launch {
-                ch.send(runCatching { fetch(url) }.getOrNull())
-            }
+        val ch = Channel<UpdateInfo?>(Channel.UNLIMITED)
+        val jobs = ordered.map { url ->
+            launch { ch.send(runCatching { fetch(url) }.getOrNull()) }
         }
         var best: UpdateInfo? = null
-        repeat(ordered.size) {
+        for (i in ordered.indices) {
             val r = ch.receive()
-            if (best == null && r != null) best = r
+            if (r != null) {
+                best = r
+                break
+            }
         }
+        // 已经拿到结果，其余镜像的连接没必要继续挂着
+        jobs.forEach { it.cancel() }
         best
     }
 

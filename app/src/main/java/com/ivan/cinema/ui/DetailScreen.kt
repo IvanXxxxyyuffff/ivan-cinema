@@ -9,7 +9,6 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -54,8 +53,6 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.compose.ui.semantics.selected
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -73,6 +70,7 @@ import com.ivan.cinema.db.FollowEntry
 import com.ivan.cinema.db.WatchEntry
 import com.ivan.cinema.ui.components.DefaultLiquid
 import com.ivan.cinema.ui.components.LiquidCard
+import com.ivan.cinema.ui.components.SelectPill
 import com.ivan.cinema.ui.components.liquidGlass
 import com.ivan.cinema.ui.components.press
 import com.ivan.cinema.ui.components.pressDip
@@ -249,7 +247,8 @@ fun DetailScreen(
                         .height(110.dp)
                         .background(
                             Brush.verticalGradient(
-                                0f to Color(0x730C0B10),
+                                // 0x0C0B10 就是 pal.canvas，写成令牌，主题漂移时不会脱节
+                                0f to pal.canvas.copy(alpha = 0.45f),
                                 0.35f to Color.Transparent
                             )
                         )
@@ -279,8 +278,9 @@ fun DetailScreen(
                         .fillMaxSize()
                         .background(
                             Brush.verticalGradient(
-                                0f to Color(0x330C0B10),
-                                0.60f to Color(0xB30C0B10),
+                                // 三档同为 pal.canvas 的透明度阶梯（0x33≈0.20 / 0xB3≈0.70）
+                                0f to pal.canvas.copy(alpha = 0.20f),
+                                0.60f to pal.canvas.copy(alpha = 0.70f),
                                 1f to pal.canvas
                             )
                         )
@@ -353,7 +353,7 @@ fun DetailScreen(
                 Modifier
                     .fillMaxWidth()
                     .padding(horizontal = Space.lg)
-                    .then(if (ready) Modifier.pressDip(playInteraction, to = 0.98f) else Modifier)
+                    .then(if (ready) Modifier.pressDip(playInteraction, to = press.card) else Modifier)
                     .clip(RoundedCornerShape(Radius.lg))
                     .background(
                         if (ready) accentBrush(pal)
@@ -409,68 +409,61 @@ fun DetailScreen(
                     .padding(top = Space.md),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                val followInteraction = remember { MutableInteractionSource() }
-                Text(
-                    if (followed) "已追剧" else "追剧",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = if (followed) pal.accentInk else if (ready) pal.ink else pal.inkMuted,
-                    modifier = Modifier
-                        .pressDip(followInteraction, to = press.control)
-                        .clip(RoundedCornerShape(Radius.pill))
-                        .background(if (followed) pal.accent else Color.Transparent)
-                        .then(
-                            if (followed) Modifier
-                            else Modifier.border(1.dp, pal.hairline, RoundedCornerShape(Radius.pill))
-                        )
-                        .clickable(
-                            enabled = ready,
-                            interactionSource = followInteraction,
-                            indication = null
-                        ) {
-                            val target = !followed
-                            followed = target
-                            followScope.launch {
-                                runCatching {
-                                    if (target) {
-                                        val d = current
-                                        if (d != null) {
-                                            FollowStore.follow(
-                                                ctx,
-                                                FollowEntry(
-                                                    vodKey = merged.key,
-                                                    name = merged.name,
-                                                    year = merged.year,
-                                                    pic = merged.pic,
-                                                    sourceApi = d.source.api,
-                                                    sourceName = d.source.name,
-                                                    vodId = d.vodId,
-                                                    episodeCount = episodes.size,
-                                                    followedAt = System.currentTimeMillis(),
-                                                    lastCheckedAt = System.currentTimeMillis()
-                                                )
+                SelectPill(
+                    selected = followed,
+                    enabled = ready,
+                    horizontalPadding = Space.lg,
+                    // 保持实色填充（本页线路/选集用渐变），不改变既有观感
+                    selectedFill = com.ivan.cinema.ui.theme.SolidColorBrushCompat(pal.accent),
+                    onClick = {
+                        val target = !followed
+                        followed = target
+                        followScope.launch {
+                            runCatching {
+                                if (target) {
+                                    val d = current
+                                    if (d != null) {
+                                        FollowStore.follow(
+                                            ctx,
+                                            FollowEntry(
+                                                vodKey = merged.key,
+                                                name = merged.name,
+                                                year = merged.year,
+                                                pic = merged.pic,
+                                                sourceApi = d.source.api,
+                                                sourceName = d.source.name,
+                                                vodId = d.vodId,
+                                                episodeCount = episodes.size,
+                                                followedAt = System.currentTimeMillis(),
+                                                lastCheckedAt = System.currentTimeMillis()
                                             )
-                                        }
-                                    } else {
-                                        FollowStore.unfollow(ctx, merged.key)
+                                        )
                                     }
+                                } else {
+                                    FollowStore.unfollow(ctx, merged.key)
                                 }
-                                followTick++   // 回读 DB，让按钮反映真实落库结果
                             }
-                            // 首次订阅时上下文申请通知权限（Android 13+）
-                            if (target && !askedNotif) {
-                                askedNotif = true
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                                    ContextCompat.checkSelfPermission(
-                                        ctx, Manifest.permission.POST_NOTIFICATIONS
-                                    ) != PackageManager.PERMISSION_GRANTED
-                                ) {
-                                    notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                                }
+                            followTick++   // 回读 DB，让按钮反映真实落库结果
+                        }
+                        // 首次订阅时上下文申请通知权限（Android 13+）
+                        if (target && !askedNotif) {
+                            askedNotif = true
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                ContextCompat.checkSelfPermission(
+                                    ctx, Manifest.permission.POST_NOTIFICATIONS
+                                ) != PackageManager.PERMISSION_GRANTED
+                            ) {
+                                notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                             }
                         }
-                        // labelLarge 18dp + 15*2 = 48dp，达最小触摸目标
-                        .padding(horizontal = Space.lg, vertical = 15.dp)
-                )
+                    }
+                ) {
+                    Text(
+                        if (followed) "已追剧" else "追剧",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (followed) pal.accentInk else if (ready) pal.ink else pal.inkMuted
+                    )
+                }
                 Spacer(Modifier.width(Space.md))
                 Text(
                     if (followed) "每天检查一次，更新了通知你" else "更新了通知你",
@@ -483,53 +476,45 @@ fun DetailScreen(
                 )
                 Spacer(Modifier.width(Space.md))
                 // ── ②c 片单收藏（与追剧同款描边胶囊，靠右；不改动追剧与主 CTA）──
-                val favInteraction = remember { MutableInteractionSource() }
-                Text(
-                    if (faved) "已收藏" else "收藏",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = if (faved) pal.accentInk else pal.ink,
-                    modifier = Modifier
-                        .pressDip(favInteraction, to = press.control)
-                        .clip(RoundedCornerShape(Radius.pill))
-                        .background(if (faved) pal.accent else Color.Transparent)
-                        .then(
-                            if (faved) Modifier
-                            else Modifier.border(1.dp, pal.hairline, RoundedCornerShape(Radius.pill))
-                        )
-                        .clickable(
-                            interactionSource = favInteraction,
-                            indication = null
-                        ) {
-                            val target = !faved
-                            faved = target
-                            favScope.launch {
-                                runCatching {
-                                    if (target) {
-                                        // 源信息优先取当前详情线路，退到列表命中（merged.hits 至少一条）
-                                        val hit = merged.hits.firstOrNull()
-                                        FavStore.add(
-                                            ctx,
-                                            FavEntry(
-                                                vodKey = merged.key,
-                                                name = merged.name,
-                                                year = merged.year,
-                                                pic = merged.pic,
-                                                sourceApi = current?.source?.api ?: hit?.source?.api.orEmpty(),
-                                                sourceName = current?.source?.name ?: hit?.source?.name.orEmpty(),
-                                                vodId = current?.vodId ?: hit?.vodId.orEmpty(),
-                                                addedAt = System.currentTimeMillis()
-                                            )
+                SelectPill(
+                    selected = faved,
+                    horizontalPadding = Space.lg,
+                    selectedFill = com.ivan.cinema.ui.theme.SolidColorBrushCompat(pal.accent),
+                    onClick = {
+                        val target = !faved
+                        faved = target
+                        favScope.launch {
+                            runCatching {
+                                if (target) {
+                                    // 源信息优先取当前详情线路，退到列表命中（merged.hits 至少一条）
+                                    val hit = merged.hits.firstOrNull()
+                                    FavStore.add(
+                                        ctx,
+                                        FavEntry(
+                                            vodKey = merged.key,
+                                            name = merged.name,
+                                            year = merged.year,
+                                            pic = merged.pic,
+                                            sourceApi = current?.source?.api ?: hit?.source?.api.orEmpty(),
+                                            sourceName = current?.source?.name ?: hit?.source?.name.orEmpty(),
+                                            vodId = current?.vodId ?: hit?.vodId.orEmpty(),
+                                            addedAt = System.currentTimeMillis()
                                         )
-                                    } else {
-                                        FavStore.remove(ctx, merged.key)
-                                    }
+                                    )
+                                } else {
+                                    FavStore.remove(ctx, merged.key)
                                 }
-                                favTick++   // 回读 DB，让按钮反映真实落库结果
                             }
+                            favTick++   // 回读 DB，让按钮反映真实落库结果
                         }
-                        // labelLarge 18dp + 15*2 = 48dp，达最小触摸目标
-                        .padding(horizontal = Space.lg, vertical = 15.dp)
-                )
+                    }
+                ) {
+                    Text(
+                        if (faved) "已收藏" else "收藏",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (faved) pal.accentInk else pal.ink
+                    )
+                }
             }
 
             if (loading) {
@@ -549,7 +534,7 @@ fun DetailScreen(
                             color = pal.accentInk,
                             modifier = Modifier
                                 .padding(horizontal = Space.lg)
-                                .pressDip(escInteraction, to = 0.95f)
+                                .pressDip(escInteraction, to = press.control)
                                 .clip(RoundedCornerShape(Radius.pill))
                                 .background(pal.accent)
                                 .clickable(interactionSource = escInteraction, indication = null) {
@@ -608,14 +593,16 @@ fun DetailScreen(
                         color = pal.danger,
                         modifier = Modifier.weight(1f)
                     )
+                    val retryInteraction = remember { MutableInteractionSource() }
                     Text(
                         "重试",
                         style = MaterialTheme.typography.labelLarge,
                         color = pal.accentInk,
                         modifier = Modifier
+                            .pressDip(retryInteraction, to = press.control)
                             .clip(RoundedCornerShape(Radius.pill))
                             .background(pal.accent)
-                            .clickable {
+                            .clickable(interactionSource = retryInteraction, indication = null) {
                                 firstOnly = false
                                 reloadKey++
                             }
@@ -633,7 +620,7 @@ fun DetailScreen(
                         color = pal.accentInk,
                         modifier = Modifier
                             .align(Alignment.CenterHorizontally)
-                            .pressDip(emptyRetry, to = 0.95f)
+                            .pressDip(emptyRetry, to = press.control)
                             .clip(RoundedCornerShape(Radius.pill))
                             .background(pal.accent)
                             .clickable(interactionSource = emptyRetry, indication = null) {
@@ -659,25 +646,17 @@ fun DetailScreen(
                     ) {
                         itemsIndexed(details) { i, d ->
                             val isSelected = i == selectedLine
-                            val interaction = remember { MutableInteractionSource() }
-                            Text(
-                                "${d.source.name} · ${d.lines.firstOrNull()?.episodes?.size ?: 0}集",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = if (isSelected) pal.accentInk else pal.ink,
-                                modifier = Modifier
-                                    .pressDip(interaction, to = 0.95f)
-                                    .clip(RoundedCornerShape(Radius.pill))
-                                    .background(
-                                        if (isSelected) accentBrush(pal)
-                                        else com.ivan.cinema.ui.theme.SolidColorBrushCompat(Color.White.copy(alpha = 0.10f))
-                                    )
-                                    .clickable(interactionSource = interaction, indication = null) {
-                                        selectedLine = i
-                                    }
-                                    .semantics { selected = isSelected }
-                                    // labelLarge 18dp + 15*2 = 48dp，达最小触摸目标
-                                    .padding(horizontal = Space.md, vertical = 15.dp)
-                            )
+                            // labelLarge 18dp + 15*2 = 48dp，达最小触摸目标
+                            SelectPill(
+                                selected = isSelected,
+                                onClick = { selectedLine = i },
+                            ) {
+                                Text(
+                                    "${d.source.name} · ${d.lines.firstOrNull()?.episodes?.size ?: 0}集",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = if (isSelected) pal.accentInk else pal.ink
+                                )
+                            }
                         }
                     }
                 }
@@ -719,26 +698,13 @@ fun DetailScreen(
                             val isCurrent = we != null &&
                                 we.episodeIndex == globalIdx &&
                                 we.sourceApi == current?.source?.api
-                            val interaction = remember { MutableInteractionSource() }
-                            Box(
-                                Modifier
-                                    .weight(1f)
-                                    .pressDip(interaction, to = 0.94f)
-                                    .clip(RoundedCornerShape(Radius.sm + 2.dp))
-                                    .background(
-                                        if (isCurrent) accentBrush(pal)
-                                        else com.ivan.cinema.ui.theme.SolidColorBrushCompat(Color.White.copy(alpha = 0.10f))
-                                    )
-                                    .combinedClickable(
-                                        interactionSource = interaction,
-                                        indication = null,
-                                        onClick = { current?.let { onPlay(it, selectedLine, globalIdx, resolvedHits) } },
-                                        onLongClick = { current?.let { onDownload(it, selectedLine, globalIdx) } }
-                                    )
-                                    .semantics { selected = isCurrent }
-                                    // labelLarge 18dp + 15*2 = 48dp，达最小触摸目标
-                                    .padding(vertical = 15.dp),
-                                contentAlignment = Alignment.Center
+                            SelectPill(
+                                selected = isCurrent,
+                                onClick = { current?.let { onPlay(it, selectedLine, globalIdx, resolvedHits) } },
+                                onLongClick = { current?.let { onDownload(it, selectedLine, globalIdx) } },
+                                modifier = Modifier.weight(1f),
+                                // 网格里横向不留白，长集名尽量完整（labelLarge 18dp + 15*2 = 48dp）
+                                horizontalPadding = 0.dp,
                             ) {
                                 Text(
                                     ep.name,

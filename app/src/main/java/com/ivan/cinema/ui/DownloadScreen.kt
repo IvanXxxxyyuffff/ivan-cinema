@@ -1,6 +1,7 @@
 package com.ivan.cinema.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,7 +19,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.ArrowBack
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -43,6 +47,7 @@ import com.ivan.cinema.player.IVANDownloadService
 import com.ivan.cinema.ui.components.EmptyState
 import com.ivan.cinema.ui.components.LiquidCard
 import com.ivan.cinema.ui.components.ThinProgress
+import com.ivan.cinema.ui.components.press
 import com.ivan.cinema.ui.components.pressDip
 import com.ivan.cinema.ui.theme.LocalIVAN
 import com.ivan.cinema.ui.theme.Radius
@@ -55,7 +60,9 @@ import kotlinx.coroutines.isActive
 @Composable
 fun DownloadScreen(
     onPlayLocal: (url: String, title: String) -> Unit,
-    contentBottomPadding: androidx.compose.ui.unit.Dp = 0.dp
+    contentBottomPadding: androidx.compose.ui.unit.Dp = 0.dp,
+    // 底栏在推入页隐藏，本页此前只能靠系统返回键退出 —— 必须由调用方接上 popPage()
+    onBack: () -> Unit = {}
 ) {
     val pal = LocalIVAN.current
     var items by remember { mutableStateOf<List<Download>>(emptyList()) }
@@ -90,13 +97,37 @@ fun DownloadScreen(
         DownloadService.sendRemoveDownload(IVANApp.app, svc, d.request.id, false)
     }
 
-    Column(Modifier.fillMaxSize()) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            // 推入页必须自带不透明底，否则下层内容会透上来
+            .opaqueScreenBackground()
+    ) {
         Row(
             Modifier
                 .fillMaxWidth()
                 .padding(horizontal = Space.lg, vertical = Space.md),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // 返回入口：和详情页/分类页返回胶囊同款（48dp / 黑 55% / 1px 白描边）
+            val backInteraction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+            Box(
+                Modifier
+                    .padding(end = Space.sm)
+                    .size(48.dp)
+                    .clip(RoundedCornerShape(Radius.pill))
+                    .background(Color.Black.copy(alpha = 0.55f))
+                    .border(1.dp, Color.White.copy(alpha = 0.22f), RoundedCornerShape(Radius.pill))
+                    .clickable(interactionSource = backInteraction, indication = null) { onBack() },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Rounded.ArrowBack,
+                    contentDescription = "返回",
+                    tint = Color.White,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
             Text(
                 "下载",
                 style = MaterialTheme.typography.headlineSmall,
@@ -111,7 +142,7 @@ fun DownloadScreen(
                 // 48dp 命中区：原来只有 34dp，手指按不准
                 Box(
                     Modifier
-                        .pressDip(interaction, to = 0.94f)
+                        .pressDip(interaction, to = press.control)
                         .clip(RoundedCornerShape(Radius.pill))
                         .background(Color.White.copy(alpha = 0.14f))
                         .clickable(interactionSource = interaction, indication = null) {
