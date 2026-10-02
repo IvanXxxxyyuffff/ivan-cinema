@@ -11,7 +11,7 @@
 
 - 包名 `com.ivan.cinema`　minSdk 26 / targetSdk 34
 - Kotlin + Jetpack Compose + Media3 + Room + OkHttp + Coil
-- 当前版本 **1.0.11（versionCode 12）**
+- 当前版本 **1.0.17（versionCode 18）**
 - 仓库 https://github.com/IvanXxxxyyuffff/ivan-cinema （public，为了 raw 直连更新清单）
 - 落地页 `docs/index.html`（扫码下载，单文件、二维码客户端生成、无第三方依赖）
 
@@ -303,3 +303,129 @@ app/src/main/java/com/ivan/cinema/
   ⚠️ 已知盲区：按**文件大小**比对，所以「改内容但字节数不变」会漏推
   （`versionCode = 16` → `17` 就是这种）。**`update.json` 已加入排除列表** ——
   它是发版产物，被 push 覆盖会让线上清单倒退回旧版本号（这个坑真踩过）。
+
+---
+
+## 2026-10-02 第八轮：三平台综合热度落地、播放提速收口、播放页三处实测修复（v1.0.17）
+
+### 爱奇艺榜单**其实能拿**（推翻第七轮结论）
+第七轮说「爱奇艺要登录态、拿不到」是**抓错了地方**：
+- `/trending/` 是壳 + iframe；`ranks1PCW/home` 的**分类行在调试窗口里不渲染**，所以当时判死。
+- 真正的入口是 **URL 路由**：`https://www.iqiyi.com/ranks1PCW/{cid}/{tagId}`。
+  动漫 cid=4，tagId 有：`0`=热播榜、`-1`=飙升榜、`6234934322090433`=日漫榜、`8052642132978633`=国漫榜。
+  这个页面是**服务端直出**，榜单条目就内嵌在 `window.__NUXT__` 里。
+- 提取：`title:"X",img:` —— 动漫页里这个模式**恰好只命中榜单条目**（导航/标签名不带 img），
+  含片名与 `mainIndex`（实时热度值）。Kotlin 侧一条正则即可，不需要 JS 引擎。
+- tagId 的完整清单可从 `cards.iqiyi.com/views_category/3.0/com_rank_list_tab?...&category_id=4` 取（要带全参数，缺一个报 422）。
+
+### 腾讯榜：接口匿名可用，但要挑干净的模块
+- `pbaccess...PageService/getPage` **不需要 cookies**（第七轮以为要登录态）。
+  带上抓包得到的真实请求体，去掉 `ams_cookies`/`ad_trans_data` 也照样返回 220KB 数据。
+- 解析要**只取 `pc_shelves` 模块**的 `children_list.list.cards[].params.title`（18 条，干净有序）。
+  `pc_carousel` 混着「片名|一句话」和广告位（「玩仙逆本尊瓜分万元豪礼」这种），
+  `channel_play_schedule` 混着「周一…周日」，都不能直接用 —— 这是第七轮 tx_rank.json 里噪音的来源。
+
+### HeatRank 改成**三平台综合热度**
+`HeatRank.load(ctx, kind)` 现在并行抓三家，按 `score = Σ 权重/(名次+1)` 合成一张名次表，
+权重 B站 1.0 > 爱奇艺 0.6 > 腾讯 0.4；合并键用 `normalize()`，跨平台写法差异能归并。
+依然 12h 落盘缓存、全失败回落旧缓存、不做假数据。`Kind` 新增 `iqTag` 字段。
+UI 文案改为「按热度排序 · B站/爱奇艺/腾讯综合国漫热度，未上榜的按源站播放量」。
+
+**实测覆盖率（`_dsx_probe/verify_merged_rank.js`）**：合并后 114 条（B站 98 + 爱奇艺 25 + 腾讯 18）。
+源站国漫分类命中数大致**翻倍**（例：闪电资源 2 → 4）。但**必须承认上限**：
+采集源的国漫分类是动态漫/短动画长尾（《甲武神》《苏东坡与杭州的故事》《大千小镇》…），
+这些片**三家平台都没有**，所以 `vod_hits` 仍是大多数条目的实际排序依据。
+另外爱奇艺「漫剧」频道（cid=37）看着像对口，实测对源站国漫命中 0，**没接**。
+
+### 播放提速第 3 项（收口，但刻意不抢用户选的线路）
+原计划「并发解析前 3 条线路、取先成功者」。实现时改成**更保守的等价收益**：
+- 播放页解析当前线路的同时，`PlayResolver.warm()` **并发预热后两条备线的同一集**；
+- 当前线路**解析不出真地址**时，立刻切到已解析好的备线（不用等 ExoPlayer 报错再串行重解析，省下每条 10s）；
+- 当前线路能出真地址时**行为与以前完全一致** —— 不因为备线快 0.2s 就把用户选的线路换掉。
+详情页预热也从「只预热第 1 条线路」扩到**前 3 条线路**的第一集。
+> 未在真机验证「解析失败 → 秒切备线」这条路径（需要一条真失效的线路）。
+
+### 播放页三处实测修复（用户截图反馈）
+1. **底栏出现两个「下一集」**：底栏左侧画了一次，可滚功能区里又画了一次
+   （`PlayBarButton("下一集")` 出现在两处）。现在合并为一处。
+2. **上一集/下一集改图标**：`SkipPrevious`/`SkipNext`，固定在左侧不参与横向滚动，
+   不可用时降透明度（不是点了没反应）。
+3. **换源入口找不到**：顶栏那枚 `SwapHoriz` 图标带 `!switchingSource` 条件，
+   标志一旦残留（自动容错中途）图标会整个消失。现在：
+   - 顶栏图标不再隐藏，换源中**只禁用**；
+   - **底栏补一个文字「换源」按钮**（`lines.size > 1` 时），底栏是主控制区，一眼可见。
+4. **点「下一集」仍从上一集进度开始**（bug）：`LaunchedEffect(lines, resolvedUrl)` 里
+   每次 `resolvedUrl` 变化都会把 DB 里存的旧进度重新 `seekTo` 回去。加了 `resumeApplied` 闸门，
+   **续播位置只在首次进页面应用一次**；同时 `playEpisode()` 显式清 `switchingSource` 并把进度归零。
+
+### push.ps1 改为内容哈希比对
+原来按**文件大小**比对，漏推「改内容但字节数不变」的编辑（`versionCode = 16 → 17` 正是这种）。
+改为本地算 **git blob sha1**（`sha1("blob <len>\0" + bytes)`，必须走 `byte[]`，拼字符串再编码会算错），
+与 tree API 返回的 `sha` 直接比。已用三个已知文件验证过本地哈希与远端一致。
+
+### 发版注意事项（本轮补充）
+- `docs/index.html` 的 APK 地址**出现两次**（按钮 href + 脚本 `APK_URL`），
+  `publish.ps1` **不会**改它 —— 从 v1.0.11 起一直没更新过，落地页在发旧包。发版后要手动同步。
+
+---
+
+## 2026-10-02 第九轮：实机反馈闭环 + 截图取证修复 + 三子代理评审
+
+### 用户实机反馈（三批，全部落地）
+1. **底栏出现两个「下一集」** —— 底栏左侧画了一次、可滚功能区里又画了一次。合并为一处，
+   并改成**图标**（`SkipPrevious`/`SkipNext`），固定在左侧不参与滚动，无集可切时置灰。
+2. **换源按钮不见了** —— 两个原因：
+   - 顶栏那枚 `SwapHoriz` 带 `!switchingSource` 条件，标志一旦残留图标整个消失。
+     现在不再隐藏、**换源中只禁用**；底栏另补一个文字「换源」按钮。
+   - **根因**：从「继续观看 / 迷你播放条 / 观看历史」进播放页时**没有 sourceSpecs**，
+     `lines` 只有 1 条 → 按 `lines.size > 1` 显示的换源入口永远不出现。
+     现在这类入口会按片名**跨源回查**（`enrichLines()`，限时 8s，只采纳归一化后同名的资源）补齐线路。
+3. **点「下一集」仍按上一集进度播** —— `LaunchedEffect(lines, resolvedUrl)` 每次 resolvedUrl 变化
+   都会把 DB 里存的旧进度重新 `seekTo` 回去。加 `resumeApplied` 闸门（只应用一次）+
+   `playEpisode()` 清 `switchingSource` 并把进度归零。
+4. **锁定后还能滑亮度/音量** —— `pointerInput(resolvedUrl)` 那条竖滑手势**没有 locked 闸门**
+   （横滑那条早就有了，竖滑漏了）。补上 `locked` key + 早退。
+5. **亮度/音量改成图标 + 外圈进度环** —— 原先是「亮度 62%」一行文字；现在中央画一个圆盘，
+   外圈是金色进度环、中心是太阳/喇叭图标，1.2s 自动隐去（连着滑重新计时）。已截图确认。
+6. **切后台暂停后回前台应自动续播** —— `onStop()` 记 `pausedByBackground`（仅当当时真在播且未播完），
+   `onStart()` 里 `play()`。用户自己按的暂停、以及播完的结束态都不会被自作主张地恢复。
+
+### 三个子代理评审发现的问题（代码侧全部已修）
+- **[P0] 备线乒乓死循环（我自己引入的）**：`PlayResolver.cached()` 对「解析失败的原文」也算命中，
+  两条死线会互相以为对方可用 → A→B→A 无限切换 + 反复发请求。
+  新增 `cachedGenuine()`（只认 .m3u8/.mp4 或解析出了新地址），并把失败线路记入 `autoTriedApis` 排除。
+- **[P1] 切备线未夹取集数**：备线集数更少时 `currentEpisode` 越界，标题/进度落盘/选集高亮全错。已 `coerceAtMost`。
+- **[P1] 续播被彻底废掉（我自己引入的）**：闸门在首帧 `resolvedUrl == null` 时就置了 true，
+  导致「继续观看」一律从 0 开始。现在只在**真正应用过位置之后**才置位，并校验
+  `e.episodeIndex == currentEpisode`（手选集数时不套用别的集的进度）。
+- **[P1] Player Listener 只 add 不 remove**：换 N 次集/源会挂 N 个监听，一次报错回调 N 次。现在换地址前先摘旧的。
+- **[P2] 播完浮层绕过锁定**：锁着也能点到「下一集/重播」。已加 `!locked`。
+- **[P2] 倍速面板「2.0x」被折成竖排**：6 档在窄面板里排不下。改 `maxLines=1 + softWrap=false` 并允许横向滚动。
+
+### 截图取证体系（`_dsx_probe`）本轮修的两个真坑
+1. **mock 源被线上清单覆盖** → 首页空态、16 屏只拍到 3 张。`SourceUpdater` 有 12h 节流，
+   而 `pm clear` 把节流清掉了，于是**测试启动应用那一次**会拉线上 `sources_manifest.json`
+   把预置的 mock 源整份覆盖。修法：`fastshots.ps1` 里插入「预热一次应用」——
+   `pm clear → 启动跑一次（写 last_check）→ force-stop → 再预置 mock 源`。
+2. **`SourceHealth` 健康缓存（`shared_prefs/ivan_sources.xml`）里存的是真实 20 源**，
+   应用取源用的是这份缓存而不是 `files/sources.json`，缓存不失效 mock 源永远不会被用到。
+   修法：预置后 `rm -f shared_prefs/ivan_sources.xml`（但**不能**删 `ivan_source_update.xml`，否则节流归零又会被覆盖）。
+3. 附带：MediaStore 里有旧同名条目时 `insert` 会抛 `UNIQUE constraint failed: files._data`，
+   重装后应用无权删旧行 → `fastshots` 用 root `content delete` 清，`ScreenshotTest.shot()` 也加了删除兜底。
+
+### 第十轮补充：倍速面板重排 + 长按 2 倍速
+- **倍速面板排版重做**：原来 6 档挤在一行，窄面板放不下就把「2.0x」折成竖排「2/./0/x」（用户实拍）。
+  改成 **3×2 等宽网格**（`SpeedChip`：`weight(1f)` + 居中 + `maxLines=1/softWrap=false`），
+  背景用 `surfaceRaised`、选中用 `accent` + `accentInk`，与设计系统一致。已截图确认 6 档独立成格。
+- **长按屏幕 = 临时 2 倍速**（`detectTapGestures(onLongPress/onPress)`）：按住切 2x 并常显提示
+  「▶▶ 2x 倍速播放中 · 松手恢复」，松手还原。**不写 PlayPrefs**（临时操作不能变成长期偏好）。
+  锁定态在上面就 early-return 了，所以长按只在未锁定时生效。已在设备上按住验证提示出现。
+
+### 已知未闭环- **「点下一集进度归零」的实机 A/B 断言没能做成**：adb/uiautomator dump 有 2s 级延迟，
+  加上 mock 的 sample.mp4 只有 52s（测试中途就播完进「下一集」遮罩），读数始终无法与「未归零」区分。
+  逐次读数（19 集 00:03 → 20 集 00:06，墙钟间隔约 6.3s）**倾向于已归零**，但不构成证据。**需要在真机上人工确认一次**。
+- 评审提出的视觉问题（海报自带美术字与 App 标题重叠、筛选行 chip 溢出被裁、多处单行省略）**未改**，
+  属存量设计问题，见评审原文。
+- 「锁定态下错误浮层的重试/换线按钮仍可点」未改（错误态需要能看到并操作，权衡后保留）。
+
+
