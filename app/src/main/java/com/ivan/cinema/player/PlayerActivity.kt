@@ -35,15 +35,20 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.Canvas
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.BrightnessHigh
 import androidx.compose.material.icons.rounded.FitScreen
 import androidx.compose.material.icons.rounded.Fullscreen
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.SkipNext
+import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.SwapHoriz
+import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -59,8 +64,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -158,11 +167,26 @@ class PlayerActivity : ComponentActivity() {
     /** 供生命周期回调使用。播放器建在 Compose 里，这里只持一个引用。 */
     private var player: ExoPlayer? = null
 
+    /** 暂停是「被切后台打断」的还是用户按的 —— 决定回前台要不要自动续播。 */
+    private var pausedByBackground = false
+
     override fun onStop() {
         super.onStop()
         // 切后台 / 息屏一律暂停。原来只在 ACTION_SCREEN_OFF 时暂停，
         // 用户按 Home 或切到别的 App 时音频还在跑（实测反馈的就是这个）。
-        runCatching { player?.pause() }
+        // 记下「是被切后台打断的」，回前台时自动接着播（见 onStart）——
+        // 用户自己按的暂停、以及播完的结束态都不算，不能自作主张地动起来。
+        val p = player
+        pausedByBackground = p != null && p.isPlaying && p.playbackState != Player.STATE_ENDED
+        runCatching { p?.pause() }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        if (pausedByBackground) {
+            pausedByBackground = false
+            runCatching { player?.play() }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -241,6 +265,10 @@ class PlayerActivity : ComponentActivity() {
         var dragging by remember { mutableStateOf(false) }
         var dragPos by remember { mutableStateOf(0L) }
         var speed by remember { mutableStateOf(PlayPrefs.speed(context)) }
+        // 长按屏幕 = 临时 2 倍速，松手恢复。boosted 期间**不写** PlayPrefs ——
+        // 这是临时操作，不该被存成用户的长期偏好。
+        var speedBoosted by remember { mutableStateOf(false) }
+        var speedBeforeBoost by remember { mutableStateOf(speed) }
         var showEpisodes by remember { mutableStateOf(false) }
         var showSpeedMenu by remember { mutableStateOf(false) }
         var showSubtitleMenu by remember { mutableStateOf(false) }
@@ -248,8 +276,22 @@ class PlayerActivity : ComponentActivity() {
         // 点播放即全屏：进入播放页直接横屏 + 沉浸，不用再手动点一次全屏
         var fullscreen by remember { mutableStateOf(true) }
         var gestureHint by remember { mutableStateOf<String?>(null) }
+        // 亮度/音量手势的圆形指示（图标 + 外圈进度环）。0=不显示 1=亮度 2=音量。
+        // gaugeTick 每次滑动自增，让 1.2s 的自动隐藏重新计时（连着滑不会中途闪掉）。
+        var gaugeKind by remember { mutableStateOf(0) }
+        var gaugeValue by remember { mutableStateOf(0f) }
+        var gaugeTick by remember { mutableStateOf(0) }
+        LaunchedEffect(gaugeTick) {
+            if (gaugeTick == 0) return@LaunchedEffect
+            delay(1200)
+            gaugeKind = 0
+        }
         var playbackError by remember { mutableStateOf<String?>(null) }
         var switchingSource by remember { mutableStateOf(false) }
+        // 续播位置只在**首次进页面**应用一次。之前没有这个闸门，resolvedUrl 每次变化
+        // （换集、换源、自动容错）都会把 DB 里旧的那条进度重新 seek 回来 —— 点「下一集」
+        // 却从上一集看到一半的位置开始，就是这个原因。
+        var resumeApplied by remember { mutableStateOf(false) }
         // 换源面板 / 清晰度面板
         var showSources by remember { mutableStateOf(false) }
         var showQuality by remember { mutableStateOf(false) }
@@ -359,6 +401,8 @@ class PlayerActivity : ComponentActivity() {
         val dao = remember { AppDb.get(this).watchDao() }
         val audio = remember { getSystemService(Context.AUDIO_SERVICE) as AudioManager }
 
+        // 当前挂在播放器上的 Listener。换地址时先摘掉旧的，避免「挂 N 个、一次错误回调 N 次」。
+        val activePlayerListeners = remember { mutableListOf<Player.Listener>() }
         val exo = remember {
             val upstream = DefaultHttpDataSource.Factory()
                 .setUserAgent("Mozilla/5.0 (Linux; Android 15) Chrome/124.0 Mobile Safari/537.36")
@@ -427,6 +471,51 @@ class PlayerActivity : ComponentActivity() {
         }
 
         // ── 构建全部线路：并发拉每个源的详情（换源的底气）──
+        /** 按 "api|源名|vodId" 批量取详情。一条线路 = 一个源上的这份资源。 */
+        suspend fun fetchLines(specs: List<String>): List<SourceLine> = coroutineScope {
+            specs.map { spec ->
+                async(Dispatchers.IO) {
+                    val parts = spec.split("|")
+                    if (parts.size < 3) return@async null
+                    val api = parts[0]
+                    val sname = parts[1]
+                    val vid = parts[2]
+                    val d = MacCmsApi(VodSource(sname, api)).detail(vid) ?: return@async null
+                    val eps = d.lines.firstOrNull()?.episodes ?: emptyList()
+                    if (eps.isEmpty()) null else SourceLine(api, sname, vid, eps)
+                }
+            }.awaitAll().filterNotNull()
+        }
+
+        /**
+         * 跨源回查同名资源，给「只有一条线路」的入口补出可换的线路。
+         * 只在**归一化后同名**时采纳 —— 搜索是按子串匹配的，不校验会搜出同名不同片。
+         * 限时 8s：拿到几条算几条，超时/失败一律不阻塞播放。
+         */
+        suspend fun enrichLines(title: String, excludeApi: String): List<SourceLine> =
+            withContext(Dispatchers.IO) {
+                val want = com.ivan.cinema.data.HeatRank.normalize(title)
+                if (want.length < 2) return@withContext emptyList()
+                val pool = com.ivan.cinema.data.SourceHealth.verified.value
+                    ?: com.ivan.cinema.data.SourcePool.load(this@PlayerActivity)
+                val candidates = pool.filter { it.api != excludeApi }
+                if (candidates.isEmpty()) return@withContext emptyList()
+                val specs = LinkedHashSet<String>()
+                runCatching {
+                    kotlinx.coroutines.withTimeoutOrNull(8_000) {
+                        com.ivan.cinema.data.Aggregator.searchAll(candidates, title, concurrency = 8)
+                            .collect { merged ->
+                                if (com.ivan.cinema.data.HeatRank.normalize(merged.name) == want) {
+                                    merged.hits.firstOrNull { it.source.api != excludeApi }?.let { h ->
+                                        specs.add("${h.source.api}|${h.source.name}|${h.vodId}")
+                                    }
+                                }
+                            }
+                    }
+                }
+                if (specs.isEmpty()) emptyList() else fetchLines(specs.toList())
+            }
+
         LaunchedEffect(vodKey) {
             if (!directUrl.isNullOrEmpty()) {
                 lines = emptyList()
@@ -447,27 +536,26 @@ class PlayerActivity : ComponentActivity() {
                 }
                 if (!found.isNullOrBlank()) currentVodId = found
             }
-            val specs = if (sourceSpecs.isNotEmpty()) sourceSpecs
+            val baseSpecs = if (sourceSpecs.isNotEmpty()) sourceSpecs
             else listOf("$currentSourceApi|$currentSourceName|$currentVodId")
-            val fetched = coroutineScope {
-                specs.map { spec ->
-                    async(Dispatchers.IO) {
-                        val parts = spec.split("|")
-                        if (parts.size < 3) return@async null
-                        val api = parts[0]
-                        val sname = parts[1]
-                        val vid = parts[2]
-                        val d = MacCmsApi(VodSource(sname, api)).detail(vid) ?: return@async null
-                        val eps = d.lines.firstOrNull()?.episodes ?: emptyList()
-                        if (eps.isEmpty()) null else SourceLine(api, sname, vid, eps)
-                    }
-                }.awaitAll().filterNotNull()
-            }
+            val fetched = fetchLines(baseSpecs)
             lines = fetched
             lineIndex = fetched.indexOfFirst { it.api == currentSourceApi }.takeIf { it >= 0 } ?: 0
             if (fetched.isEmpty()) {
                 playbackError = "所有线路都拿不到播放地址"
                 resolving = false
+                return@LaunchedEffect
+            }
+            // 只有一条线路 = 播放页根本不会出现「换源」入口。从「继续观看 / 迷你播放条 /
+            // 观看历史 / 云端同步记录」进来时正是这种情况（这些入口没带 sourceSpecs）——
+            // 用户实测反馈「换源的按钮搞哪去了」，根因就在这里。
+            // 先用手上的线路立刻开播，再后台按片名去其它可信源回查补齐（限时 8s）。
+            if (fetched.size < 2) {
+                val extra = enrichLines(name, currentSourceApi)
+                if (extra.isNotEmpty()) {
+                    lines = fetched + extra
+                    gestureHint = "已找到 ${extra.size + 1} 条线路"
+                }
             }
         }
 
@@ -492,10 +580,21 @@ class PlayerActivity : ComponentActivity() {
                 return@LaunchedEffect
             }
             resolving = true
+            // 并发预热后面两条备线的同一集（warm 自己 fire-and-forget，不阻塞这里）。
+            // 当前线路解析不出真地址时，备线已经解析好，可以立刻顶上 ——
+            // 否则只能等 ExoPlayer 报错后由自动换源串行再解析一次，每条最长再等 10s。
+            if (lines.size > 1) {
+                for (off in 1..minOf(2, lines.size - 1)) {
+                    val ln = lines[(lineIndex + off) % lines.size]
+                    (ln.episodes.getOrNull(currentEpisode) ?: ln.episodes.lastOrNull())?.url
+                        ?.let { PlayResolver.warm(it) }
+                }
+            }
             val url = withContext(Dispatchers.IO) { PlayResolver.resolve(ep.url) }
             resolving = false
-            // 解析失败原来会让 resolvedUrl 保持 null，于是既不报错也不播放，
-            // 黑屏卡在「缓冲中…」。这里补上错误态。
+            // 「真解析成功」= 拿到了地址（可能与原文相同，但确实是 .m3u8/.mp4）或解析出了新地址。
+            // resolve 解析不出时会把原文原样返回，那种情况下面才走备线。
+            val genuine = url != ep.url.trim() || url.contains(".m3u8") || url.contains(".mp4")
             val oldUrl = resolvedUrl
             if (url.isNullOrBlank()) {
                 resolvedUrl = null
@@ -503,6 +602,42 @@ class PlayerActivity : ComponentActivity() {
                 // 解析失败也是「线路失效」：交给统一入口决定自动换源还是报错
                 switchingSource = false
                 handlePlaybackFailure("这条线路解析不出播放地址")
+            } else if (!genuine) {
+                // 当前线路解析不出真地址：看并发预热好的备线里有没有**真**结果，有就直接切。
+                // 两个必须：
+                //  ① 用 cachedGenuine 而不是 cached —— 后者对「解析失败的原文」也算命中，
+                //     两条死线会互相觉得对方可用，A→B→A 死循环（评审指出的 P0）；
+                //  ② 排掉已经试过的线路（autoTriedApis），即使还有一个「看似可用」的备线，
+                //     也不会再切第二次；切不动就老实走下面的原文兜底，不再来回跳。
+                val curApi = lines[lineIndex].api
+                val backupIdx = (1..minOf(2, lines.size - 1)).firstOrNull { off ->
+                    val idx = (lineIndex + off) % lines.size
+                    if (lines[idx].api in autoTriedApis) return@firstOrNull false
+                    val ln = lines[idx]
+                    val u = (ln.episodes.getOrNull(currentEpisode) ?: ln.episodes.lastOrNull())?.url
+                    u != null && PlayResolver.cachedGenuine(u) != null
+                }?.let { (lineIndex + it) % lines.size }
+                if (backupIdx != null) {
+                    val fromName = currentSourceName
+                    // 记下这条线路解析不出，保证不会切回来
+                    autoTriedApis = autoTriedApis + curApi
+                    switchingSource = true
+                    lineIndex = backupIdx
+                    currentSourceApi = lines[backupIdx].api
+                    currentSourceName = lines[backupIdx].name
+                    currentVodId = lines[backupIdx].vodId
+                    // 备线集数可能更少：必须夹取，否则 currentEpisode 越界会让标题、进度落盘、
+                    // 选集高亮全都对不上（评审指出的 P1）
+                    currentEpisode = currentEpisode.coerceAtMost(
+                        (lines[backupIdx].episodes.size - 1).coerceAtLeast(0)
+                    )
+                    gestureHint = "线路 $fromName 解析不出，已切到 ${lines[backupIdx].name}"
+                    // 交给 key 变化后的下一轮 effect：备线已在缓存里，会秒出
+                } else {
+                    // 备线也没有现成结果：保持原行为，把原文交给 ExoPlayer 试一次
+                    resolvedUrl = url
+                    if (url == oldUrl) switchingSource = false
+                }
             } else {
                 resolvedUrl = url
                 // 新源地址与当前相同时 resolvedUrl 不变，监听它的 effect 不会重跑，
@@ -532,7 +667,12 @@ class PlayerActivity : ComponentActivity() {
             }
             val keepPos = if (switchingSource) exo.currentPosition else 0L
             exo.setMediaItem(MediaItem.fromUri(url))
-            exo.addListener(object : Player.Listener {
+            // 每换一次地址就换一个 Listener，旧的一律先摘掉。
+            // 原来只 add 不 remove：换 N 次集/源就挂了 N 个 Listener，
+            // 一次 onPlayerError 会被回调 N 次（评审指出的 P1），自动换源计数也会被重复消耗。
+            activePlayerListeners.forEach { runCatching { exo.removeListener(it) } }
+            activePlayerListeners.clear()
+            val listener = object : Player.Listener {
                 override fun onIsPlayingChanged(playing: Boolean) {
                     isPlaying = playing
                     // 播放成功 = 本次容错序列结束，计数与去重集合清零
@@ -594,7 +734,9 @@ class PlayerActivity : ComponentActivity() {
                     // 统一走容错入口：静默上报 + 自动换下一条线路，试无可试才报错
                     handlePlaybackFailure("这条线路失效了")
                 }
-            })
+            }
+            activePlayerListeners.add(listener)
+            exo.addListener(listener)
             exo.prepare()
             if (switchingSource && keepPos > 10_000) {
                 exo.seekTo(keepPos)
@@ -604,8 +746,17 @@ class PlayerActivity : ComponentActivity() {
         }
 
         LaunchedEffect(lines, resolvedUrl) {
-            if (resolvedUrl == null || !resume) return@LaunchedEffect
-            val e = withContext(Dispatchers.IO) { dao.get(vodKey) } ?: return@LaunchedEffect
+            // 只应用一次续播位置：换集/换源/自动容错引起的 resolvedUrl 变化一律跳过。
+            // ⚠️ 闸门只能在**真正应用过之后**或在明确不需要时关闭。首帧 resolvedUrl 必然为 null，
+            // 那时就置 true 会把「继续观看」彻底废掉（一进来就从 0 开始）——评审实测指出的 P1。
+            if (resumeApplied) return@LaunchedEffect
+            if (!resume) { resumeApplied = true; return@LaunchedEffect }
+            if (resolvedUrl == null) return@LaunchedEffect   // 还没解析出来，等下一轮
+            val e = withContext(Dispatchers.IO) { dao.get(vodKey) }
+            if (e == null) { resumeApplied = true; return@LaunchedEffect }
+            // 记录里的集数必须与当前播的集一致才套用进度：从详情页手选集数时 resume 仍为 true，
+            // 不校验就会把「上次看到哪儿」套到另一集上（评审指出的连带缺陷）。
+            if (e.episodeIndex != currentEpisode) { resumeApplied = true; return@LaunchedEffect }
             if (e.positionMs > 15_000) {
                 var waited = 0
                 while (exo.duration <= 0 && waited < 5000) {
@@ -615,6 +766,7 @@ class PlayerActivity : ComponentActivity() {
                     exo.seekTo(e.positionMs)
                 }
             }
+            resumeApplied = true
         }
 
         LaunchedEffect(resolvedUrl) {
@@ -661,6 +813,7 @@ class PlayerActivity : ComponentActivity() {
         val currentLine = lines.getOrNull(lineIndex)
         val episodes = currentLine?.episodes ?: emptyList()
         val hasNext = directUrl.isNullOrEmpty() && currentEpisode + 1 < episodes.size
+        val hasPrev = directUrl.isNullOrEmpty() && currentEpisode > 0
 
         fun playEpisode(idx: Int) {
             if (idx in episodes.indices && idx != currentEpisode) {
@@ -669,7 +822,13 @@ class PlayerActivity : ComponentActivity() {
                 autoAttempts = 0
                 autoTriedApis = emptySet()
                 failoverInFlight = false
+                // 换集必须从 0 开始。之前没清 switchingSource：它可能残留自上一次换源，
+                // 于是下面的 resolvedUrl effect 会 keepPos=当前进度，把上一集的位置带到新一集。
+                switchingSource = false
                 currentEpisode = idx
+                // 立刻把进度归零，避免下一帧（新流还没就绪时）仍画着上一集的进度条
+                positionMs = 0L
+                durationMs = 0L
             }
         }
 
@@ -782,6 +941,23 @@ class PlayerActivity : ComponentActivity() {
                         onDoubleTap = {
                             if (exo.isPlaying) exo.pause() else exo.play()
                             gestureHint = if (exo.isPlaying) "播放" else "暂停"
+                        },
+                        // 长按加速：按住屏幕临时切到 2 倍速，松手还原（B 站/YouTube 的手感）。
+                        // 锁定态在上面就 early-return 了，所以长按只在未锁定时生效。
+                        onLongPress = {
+                            if (!speedBoosted) {
+                                speedBeforeBoost = speed
+                                speedBoosted = true
+                                speed = 2f
+                            }
+                        },
+                        onPress = {
+                            // 松手（含被取消）统一还原；只有真的 boost 过才动 speed
+                            tryAwaitRelease()
+                            if (speedBoosted) {
+                                speed = speedBeforeBoost
+                                speedBoosted = false
+                            }
                         }
                     )
                 }
@@ -804,7 +980,11 @@ class PlayerActivity : ComponentActivity() {
                         }
                     )
                 }
-                .pointerInput(resolvedUrl) {
+                .pointerInput(resolvedUrl, locked) {
+                    // ⚠️ 必须把 locked 当 key 并早退：原来这条只按 resolvedUrl 建 key，
+                    // 锁屏后它不会重建、也没有 locked 判断 —— 于是「锁了还能滑亮度/音量」
+                    // （用户实测反馈）。横滑那条早就这么做了，这条当时漏了。
+                    if (locked) return@pointerInput
                     var leftSide = true
                     detectVerticalDragGestures(
                         onDragStart = { offset -> leftSide = offset.x < size.width / 2f },
@@ -815,13 +995,17 @@ class PlayerActivity : ComponentActivity() {
                                 val next = (cur - delta / size.height).coerceIn(0.05f, 1f)
                                 lp.screenBrightness = next
                                 window.attributes = lp
-                                gestureHint = "亮度 ${(next * 100).toInt()}%"
+                                gaugeKind = GAUGE_BRIGHTNESS
+                                gaugeValue = next
+                                gaugeTick++
                             } else {
                                 val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
                                 val cur = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
                                 val next = (cur + (-delta / size.height * max).toInt()).coerceIn(0, max)
                                 audio.setStreamVolume(AudioManager.STREAM_MUSIC, next, 0)
-                                gestureHint = "音量 ${(next * 100 / max)}%"
+                                gaugeKind = GAUGE_VOLUME
+                                gaugeValue = if (max > 0) next.toFloat() / max else 0f
+                                gaugeTick++
                             }
                         }
                     )
@@ -898,7 +1082,9 @@ class PlayerActivity : ComponentActivity() {
             }
 
             AnimatedVisibility(
-                visible = gestureHint != null,
+                // 长按加速期间常显（gestureHint 那条 1.4s 的自动清除管不到它），
+                // 松手才消失 —— 否则用户还按着、提示先没了，会以为没生效。
+                visible = gestureHint != null || speedBoosted,
                 enter = fadeIn(motionFade(120)),
                 exit = fadeOut(motionExit(100)),
                 modifier = Modifier.align(Alignment.Center)
@@ -910,10 +1096,58 @@ class PlayerActivity : ComponentActivity() {
                         .padding(horizontal = Space.lg, vertical = Space.sm)
                 ) {
                     Text(
-                        gestureHint ?: hintText,
+                        if (speedBoosted) "▶▶ 2x 倍速播放中 · 松手恢复" else gestureHint ?: hintText,
                         style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
                         color = Color.White,
                         modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+                    )
+                }
+            }
+
+            // 亮度 / 音量手势指示：图标 + 外圈进度环。
+            // 原来是一行「亮度 62%」文字 —— 用户反馈不直观，改成一眼能看出「在调什么、调到哪」。
+            if (gaugeKind != 0) {
+                // Canvas 的 draw lambda 不是 @Composable，颜色必须在外面取好再进去用
+                val gaugeAccent = LocalIVAN.current.accent
+                Box(
+                    Modifier
+                        .align(Alignment.Center)
+                        .size(104.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.55f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Canvas(Modifier.fillMaxSize()) {
+                        val stroke = 6.dp.toPx()
+                        val inset = stroke / 2f
+                        val arcSize = Size(size.width - stroke, size.height - stroke)
+                        // 底环
+                        drawArc(
+                            color = Color.White.copy(alpha = 0.22f),
+                            startAngle = -90f,
+                            sweepAngle = 360f,
+                            useCenter = false,
+                            topLeft = Offset(inset, inset),
+                            size = arcSize,
+                            style = Stroke(width = stroke, cap = StrokeCap.Round)
+                        )
+                        // 当前值环（从 12 点顺时针）
+                        drawArc(
+                            color = gaugeAccent,
+                            startAngle = -90f,
+                            sweepAngle = 360f * gaugeValue.coerceIn(0f, 1f),
+                            useCenter = false,
+                            topLeft = Offset(inset, inset),
+                            size = arcSize,
+                            style = Stroke(width = stroke, cap = StrokeCap.Round)
+                        )
+                    }
+                    Icon(
+                        if (gaugeKind == GAUGE_BRIGHTNESS) Icons.Rounded.BrightnessHigh
+                        else Icons.AutoMirrored.Rounded.VolumeUp,
+                        contentDescription = if (gaugeKind == GAUGE_BRIGHTNESS) "亮度" else "音量",
+                        tint = Color.White,
+                        modifier = Modifier.size(38.dp)
                     )
                 }
             }
@@ -962,15 +1196,17 @@ class PlayerActivity : ComponentActivity() {
                         )
                         // 切换源：只留一个图标。原来是一枚「暴风资源 ⇄」文字胶囊，
                         // 源名长短不一，长名字会把标题挤没；点开才是源列表。
-                        if (lines.size > 1 && !switchingSource) {
+                        // 不再用 switchingSource 隐藏它 —— 那个标志一旦残留（自动容错中途），
+                        // 图标会整个消失，用户就找不到换源入口了；换源中禁用即可。
+                        if (lines.size > 1) {
                             Icon(
                                 Icons.Rounded.SwapHoriz,
                                 contentDescription = "切换播放源",
-                                tint = Color.White,
+                                tint = Color.White.copy(alpha = if (switchingSource) 0.35f else 1f),
                                 modifier = Modifier
                                     .size(48.dp)
                                     .clip(CircleShape)
-                                    .clickable { showSources = true }
+                                    .clickable(enabled = !switchingSource) { showSources = true }
                                     .padding(12.dp)
                             )
                         }
@@ -1053,9 +1289,19 @@ class PlayerActivity : ComponentActivity() {
                         Spacer(Modifier.height(Space.xs))
 
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (hasNext) {
-                                PlayBarButton("下一集") { playEpisode(currentEpisode + 1) }
-                            }
+                            // 上一集 / 下一集：用图标更直观，且固定在最左侧不参与滚动（永远够得到）。
+                            // 这里原来写成文字「下一集」，下面可滚区又画了一遍 —— 底栏因此出现两个
+                            // 「下一集」（用户实拍反馈）。现在只保留这一份。
+                            PlayBarIcon(
+                                Icons.Rounded.SkipPrevious,
+                                contentDescription = "上一集",
+                                enabled = hasPrev
+                            ) { playEpisode(currentEpisode - 1) }
+                            PlayBarIcon(
+                                Icons.Rounded.SkipNext,
+                                contentDescription = "下一集",
+                                enabled = hasNext
+                            ) { playEpisode(currentEpisode + 1) }
                             // 功能组横向可滚：竖屏只有 411dp 宽，按钮一多硬排会被裁掉
                             // （实测「800P」之后就看不见了）。滚动能保证每个按钮都够得到。
                             Row(
@@ -1064,8 +1310,11 @@ class PlayerActivity : ComponentActivity() {
                                     .horizontalScroll(rememberScrollState()),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                if (hasNext) {
-                                    PlayBarButton("下一集") { playEpisode(currentEpisode + 1) }
+                                Spacer(Modifier.width(Space.md))
+                                // 换源入口放回底栏：只在顶栏留一枚图标太隐蔽（用户反馈「换源的按钮搞哪去了」）。
+                                // 底栏是主控制区，文字标签一眼可见。
+                                if (lines.size > 1) {
+                                    PlayBarButton("换源") { showSources = true }
                                     Spacer(Modifier.width(Space.lg))
                                 }
                                 PlayBarButton("${speed}x") { showSpeedMenu = true }
@@ -1132,7 +1381,8 @@ class PlayerActivity : ComponentActivity() {
                 }
             }
 
-            if (ended && playbackError == null) {
+            // 锁定态不显示：这是个可点的「下一集/重播」浮层，锁着还能点等于锁失效
+            if (ended && playbackError == null && !locked) {
                 Box(
                     Modifier
                         .align(Alignment.Center)
@@ -1275,24 +1525,23 @@ class PlayerActivity : ComponentActivity() {
             if (showSpeedMenu) {
                 MenuSheet(onDismiss = { showSpeedMenu = false }) {
                     Text("倍速", style = androidx.compose.material3.MaterialTheme.typography.titleMedium, color = pal.ink)
-                    Spacer(Modifier.height(Space.sm + 2.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
-                        listOf(0.75f, 1f, 1.25f, 1.5f, 2f, 3f).forEach { s ->
-                            val on = s == speed
-                            Text(
-                                "${s}x",
-                                style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
-                                color = if (on) pal.accentInk else pal.ink,
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(Radius.sm + 2.dp))
-                                    .background(if (on) pal.accent else pal.surfaceRaised)
-                                    .clickable {
+                    Spacer(Modifier.height(Space.md))
+                    // 3×2 等宽网格。原来 6 档挤在一行里，面板一窄就把最后一档折成竖排
+                    // 「2 / . / 0 / x」（实拍确认）；等宽 + 居中 + 禁止换行既不折行也更齐整。
+                    Column(verticalArrangement = Arrangement.spacedBy(Space.sm)) {
+                        listOf(0.75f, 1f, 1.25f, 1.5f, 2f, 3f).chunked(3).forEach { row ->
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(Space.sm),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                row.forEach { s ->
+                                    SpeedChip(s, on = s == speed) {
                                         speed = s
                                         PlayPrefs.setSpeed(context, s)
                                         showSpeedMenu = false
                                     }
-                                    .padding(horizontal = Space.md, vertical = Space.sm)
-                            )
+                                }
+                            }
                         }
                     }
                 }
@@ -1435,6 +1684,61 @@ class PlayerActivity : ComponentActivity() {
 
 /** 腾讯视频式文字按钮：无面板，只有白字 + 按压反馈。文案变化时 150ms 交叉淡化。
  *  [active] = true 用金色，给「增强已开」这类有开关语义的按钮用。 */
+/** 亮度/音量手势指示的类型。0 = 不显示。 */
+private const val GAUGE_BRIGHTNESS = 1
+private const val GAUGE_VOLUME = 2
+
+/**
+ * 播放器底栏的图标按钮（上一集 / 下一集）。
+ * [enabled] = false 时降透明度且不可点，让「没有上一集」这件事一眼可见，而不是点了没反应。
+ */
+@Composable
+private fun PlayBarIcon(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    Icon(
+        icon,
+        contentDescription = contentDescription,
+        tint = Color.White.copy(alpha = if (enabled) 1f else 0.30f),
+        modifier = Modifier
+            .size(48.dp)
+            .clip(RoundedCornerShape(Radius.sm))
+            .clickable(enabled = enabled) { onClick() }
+            .padding(11.dp)
+    )
+}
+
+/** 倍速面板里的一格：等宽、居中、绝不换行（窄面板下也不会把「2.0x」折成竖排）。 */
+@Composable
+private fun androidx.compose.foundation.layout.RowScope.SpeedChip(
+    value: Float,
+    on: Boolean,
+    onClick: () -> Unit
+) {
+    val pal = LocalIVAN.current
+    Box(
+        Modifier
+            .weight(1f)
+            .clip(RoundedCornerShape(Radius.sm + 2.dp))
+            .background(if (on) pal.accent else pal.surfaceRaised)
+            .clickable { onClick() }
+            .padding(vertical = Space.md),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            "${value}x",
+            style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
+            color = if (on) pal.accentInk else pal.ink,
+            maxLines = 1,
+            softWrap = false,
+            textAlign = TextAlign.Center
+        )
+    }
+}
+
 @Composable
 private fun PlayBarButton(label: String, active: Boolean = false, onClick: () -> Unit) {
     MotionTextSwap(
