@@ -99,7 +99,7 @@ fun CategoryScreen(
     // 当前页的流是否仍在收集：驱动「还在加载更多源…」与分页守卫
     var loadingMore by remember(tab) { mutableStateOf(false) }
 
-    // 国漫/日漫按热度排。榜单来自 B 站国创/番剧榜（为什么只有 B 站，见 HeatRank 注释）。
+    // 国漫/日漫按热度排。榜单是 B站/爱奇艺/腾讯三平台合成的综合热度（怎么采、怎么合，见 HeatRank 注释）。
     // 其他分类 heatKind 为 null，榜单为空，下面的排序原样返回 —— 等于没做任何事。
     val heatKind = when {
         tab != HomeTab.ANIME -> null
@@ -197,8 +197,8 @@ fun CategoryScreen(
     // 上屏顺序：国漫/日漫按热度排，其余分类原样。
     //
     // 热度是两段合成，因为单靠任何一段都不够：
-    //   ① B 站国创/番剧榜位次 —— 权威，但只覆盖到 5~15% 的条目（采集源的动漫分类里
-    //      大量是《开心锤锤》这类动态漫/短动画，跟 B 站精品国创根本不是同一批片库）；
+    //   ① 三平台综合榜位次（B站权威 + 爱奇艺/腾讯补覆盖）—— 权威，但仍有相当一部分
+    //      条目不在任何平台上（采集源动漫分类里大量是《开心锤锤》这类动态漫/短动画）；
     //   ② 源站 vod_hits 播放量 —— 每条都有机会拿到，作为未上榜条目的依据。
     // 所以：上榜的按榜位在前，未上榜的按播放量降序跟在后面。
     // sortedWith 是稳定排序，两段内部的并列项保持源站原顺序，分页追加不会搅乱已有条目。
@@ -287,7 +287,7 @@ fun CategoryScreen(
             if (heatKind != null) {
                 Text(
                     if (heat.isEmpty()) "热度榜暂时取不到，按源站播放量排序"
-                    else "按热度排序 · ${heatKind.label}榜取自 B 站，未上榜的按源站播放量",
+                    else "按热度排序 · B站/爱奇艺/腾讯综合${heatKind.label}热度，未上榜的按源站播放量",
                     style = MaterialTheme.typography.labelSmall,
                     color = pal.inkMuted,
                     modifier = Modifier.padding(start = Space.lg, bottom = Space.sm)
