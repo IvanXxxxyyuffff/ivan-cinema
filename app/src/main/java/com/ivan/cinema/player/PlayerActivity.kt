@@ -16,6 +16,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -154,6 +155,16 @@ private data class SourceLine(
 @UnstableApi
 class PlayerActivity : ComponentActivity() {
 
+    /** 供生命周期回调使用。播放器建在 Compose 里，这里只持一个引用。 */
+    private var player: ExoPlayer? = null
+
+    override fun onStop() {
+        super.onStop()
+        // 切后台 / 息屏一律暂停。原来只在 ACTION_SCREEN_OFF 时暂停，
+        // 用户按 Home 或切到别的 App 时音频还在跑（实测反馈的就是这个）。
+        runCatching { player?.pause() }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -209,6 +220,19 @@ class PlayerActivity : ComponentActivity() {
          * 只在左下角留一个解锁入口 —— 躺着看剧时手滑碰到屏幕不会把进度跳走。
          */
         var locked by remember { mutableStateOf(false) }
+        // 解锁入口不能一直挂在屏幕上挡画面：进锁定态先亮 5 秒，之后自动隐去，
+        // 再点屏幕才重新亮 5 秒。用 tick 而不是布尔——重复点的时候要让 5 秒重新计时。
+        var lockHintTick by remember { mutableStateOf(0) }
+        var lockHintVisible by remember { mutableStateOf(false) }
+        LaunchedEffect(locked, lockHintTick) {
+            if (!locked) {
+                lockHintVisible = false
+                return@LaunchedEffect
+            }
+            lockHintVisible = true
+            delay(5_000)
+            lockHintVisible = false
+        }
         var isPlaying by remember { mutableStateOf(false) }
         var isBuffering by remember { mutableStateOf(true) }
         var ended by remember { mutableStateOf(false) }
@@ -348,6 +372,12 @@ class PlayerActivity : ComponentActivity() {
                 .setSeekForwardIncrementMs(30_000)
                 .build()
         }
+        DisposableEffect(exo) {
+            // 把引用交给 Activity，onStop（切后台/息屏）才能暂停
+            player = exo
+            onDispose { if (player === exo) player = null }
+        }
+
         // 息屏/锁屏就暂停。
         //
         // 上面设的 FLAG_KEEP_SCREEN_ON 只防"App 自己把屏点亮着"，管不住用户按电源键——
@@ -741,9 +771,12 @@ class PlayerActivity : ComponentActivity() {
                         }
                     )
                 }
-                .pointerInput(Unit) {
-                    // 锁上后连"点一下唤出控制层"都不响应 —— 那一下正是最常见的误触
-                    if (locked) return@pointerInput
+                .pointerInput(locked) {
+                    if (locked) {
+                        // 锁定态：点屏幕不唤出控制层，只把解锁入口亮 5 秒
+                        detectTapGestures(onTap = { lockHintTick++ })
+                        return@pointerInput
+                    }
                     detectTapGestures(
                         onTap = { controlsVisible = !controlsVisible },
                         onDoubleTap = {
@@ -1023,42 +1056,45 @@ class PlayerActivity : ComponentActivity() {
                             if (hasNext) {
                                 PlayBarButton("下一集") { playEpisode(currentEpisode + 1) }
                             }
-                            Spacer(Modifier.weight(1f))
-                            PlayBarButton("${speed}x") { showSpeedMenu = true }
-                            // 画质增强放在倍速旁边，而不是塞进清晰度面板：
-                            // 播放页是横屏，面板本来就贴着上下边，再挂一节「画质增强」
-                            // 会直接溢出屏幕（实拍确认：只剩一行字露在底边）。
-                            Spacer(Modifier.width(Space.lg))
-                            PlayBarButton(if (enhance) "画质增强·开" else "画质增强", active = enhance) {
-                                enhance = !enhance
-                                PlayPrefs.setEnhance(context, enhance)
-                                applyEnhance(enhance)
-                            }
-                            Spacer(Modifier.width(Space.lg))
-                            // 清晰度入口常驻：即使源只有单码率，也要让用户看得到"当前是自动"，
-                            // 而不是点了发现按钮不存在、以为功能没做
-                            PlayBarButton(if (maxHeight == 0) "清晰度" else "${maxHeight}P") {
-                                showQuality = true
-                            }
-                            // 没有字幕轨时不显示入口：点了只会开出一个死胡同面板
-                            if (hasSubtitle) {
+                            // 功能组横向可滚：竖屏只有 411dp 宽，按钮一多硬排会被裁掉
+                            // （实测「800P」之后就看不见了）。滚动能保证每个按钮都够得到。
+                            Row(
+                                Modifier
+                                    .weight(1f)
+                                    .horizontalScroll(rememberScrollState()),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                if (hasNext) {
+                                    PlayBarButton("下一集") { playEpisode(currentEpisode + 1) }
+                                    Spacer(Modifier.width(Space.lg))
+                                }
+                                PlayBarButton("${speed}x") { showSpeedMenu = true }
+                                // 画质增强放在倍速旁边，而不是塞进清晰度面板：
+                                // 播放页是横屏，面板本来就贴着上下边，再挂一节「画质增强」
+                                // 会直接溢出屏幕（实拍确认：只剩一行字露在底边）。
                                 Spacer(Modifier.width(Space.lg))
-                                PlayBarButton("字幕") { showSubtitleMenu = true }
+                                PlayBarButton(if (enhance) "画质增强·开" else "画质增强", active = enhance) {
+                                    enhance = !enhance
+                                    PlayPrefs.setEnhance(context, enhance)
+                                    applyEnhance(enhance)
+                                }
+                                Spacer(Modifier.width(Space.lg))
+                                // 清晰度入口常驻：即使源只有单码率，也要让用户看得到"当前是自动"，
+                                // 而不是点了发现按钮不存在、以为功能没做
+                                PlayBarButton(if (maxHeight == 0) "清晰度" else "${maxHeight}P") {
+                                    showQuality = true
+                                }
+                                // 没有字幕轨时不显示入口：点了只会开出一个死胡同面板
+                                if (hasSubtitle) {
+                                    Spacer(Modifier.width(Space.lg))
+                                    PlayBarButton("字幕") { showSubtitleMenu = true }
+                                }
+                                Spacer(Modifier.width(Space.lg))
+                                PlayBarButton("选集") { showEpisodes = true }
                             }
-                            Spacer(Modifier.width(Space.lg))
-                            PlayBarButton("选集") { showEpisodes = true }
-                            Spacer(Modifier.width(Space.lg))
-                            Icon(
-                                if (fullscreen) Icons.Rounded.FitScreen else Icons.Rounded.Fullscreen,
-                                contentDescription = if (fullscreen) "退出全屏" else "全屏",
-                                tint = Color.White,
-                                modifier = Modifier
-                                    .size(48.dp)
-                                    .clickable { fullscreen = !fullscreen }
-                                    .padding(11.dp)
-                            )
                             Spacer(Modifier.width(Space.md))
-                            // 防误触：躺着看剧时手滑碰到屏幕会把进度跳走，锁上就只留解锁入口
+                            // 锁定按钮固定在右侧、不参与滚动 —— 它必须永远够得到。
+                            // 全屏按钮不在这里：顶栏已经有一个，两个重复（用户反馈"有2个全屏按钮"）。
                             Icon(
                                 Icons.Rounded.LockOpen,
                                 contentDescription = "锁定屏幕",
@@ -1073,9 +1109,10 @@ class PlayerActivity : ComponentActivity() {
                 }
             }
 
-            // 锁定态：只留这一个解锁入口。必须做 —— 只加锁不给解锁会把人困在播放页里。
-            // 放在左侧居中而不是底部：躺姿下拇指够得到，且不会被进度条误触。
-            if (locked) {
+            // 锁定态的解锁入口：只在 lockHintVisible 时出现（进锁定时亮 5 秒，
+            // 之后自动隐去；点屏幕再亮 5 秒）。位置固定左侧居中 —— 躺姿下拇指够得到，
+            // 也不会被底部进度条误触。
+            if (locked && lockHintVisible) {
                 Box(
                     Modifier
                         .align(Alignment.CenterStart)
