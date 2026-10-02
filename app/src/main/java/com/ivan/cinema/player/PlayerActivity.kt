@@ -38,6 +38,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.FitScreen
 import androidx.compose.material.icons.rounded.Fullscreen
+import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.SwapHoriz
@@ -202,6 +204,11 @@ class PlayerActivity : ComponentActivity() {
         var resolvedUrl by remember { mutableStateOf<String?>(null) }
         var resolving by remember { mutableStateOf(true) }
         var controlsVisible by remember { mutableStateOf(true) }
+        /**
+         * 防误触锁定。锁上之后屏蔽全部点击与手势（横滑快进/竖滑亮度音量/双击暂停），
+         * 只在左下角留一个解锁入口 —— 躺着看剧时手滑碰到屏幕不会把进度跳走。
+         */
+        var locked by remember { mutableStateOf(false) }
         var isPlaying by remember { mutableStateOf(false) }
         var isBuffering by remember { mutableStateOf(true) }
         var ended by remember { mutableStateOf(false) }
@@ -341,6 +348,30 @@ class PlayerActivity : ComponentActivity() {
                 .setSeekForwardIncrementMs(30_000)
                 .build()
         }
+        // 息屏/锁屏就暂停。
+        //
+        // 上面设的 FLAG_KEEP_SCREEN_ON 只防"App 自己把屏点亮着"，管不住用户按电源键——
+        // 锁屏后 ExoPlayer 的音频还在跑，会被当成后台偷跑（用户实测报的就是这个）。
+        // 用 ACTION_SCREEN_OFF 而不是 onStop：切到最近任务、被别的 App 覆盖时也会走 onStop，
+        // 那种情况不该停；ACTION_SCREEN_OFF 只在真正灭屏时发。
+        // 只暂停、不自动恢复——解锁后要不要接着看由用户决定。
+        DisposableEffect(Unit) {
+            val receiver = object : android.content.BroadcastReceiver() {
+                override fun onReceive(c: android.content.Context?, i: android.content.Intent?) {
+                    if (i?.action == android.content.Intent.ACTION_SCREEN_OFF) {
+                        runCatching { exo.pause() }
+                    }
+                }
+            }
+            androidx.core.content.ContextCompat.registerReceiver(
+                context,
+                receiver,
+                android.content.IntentFilter(android.content.Intent.ACTION_SCREEN_OFF),
+                androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED
+            )
+            onDispose { runCatching { context.unregisterReceiver(receiver) } }
+        }
+
         DisposableEffect(Unit) {
             onDispose {
                 // 退出播放页：落盘最后进度并强制上云（跳过节流），保证「看到哪」不丢
@@ -711,6 +742,8 @@ class PlayerActivity : ComponentActivity() {
                     )
                 }
                 .pointerInput(Unit) {
+                    // 锁上后连"点一下唤出控制层"都不响应 —— 那一下正是最常见的误触
+                    if (locked) return@pointerInput
                     detectTapGestures(
                         onTap = { controlsVisible = !controlsVisible },
                         onDoubleTap = {
@@ -719,7 +752,8 @@ class PlayerActivity : ComponentActivity() {
                         }
                     )
                 }
-                .pointerInput(resolvedUrl) {
+                .pointerInput(resolvedUrl, locked) {
+                    if (locked) return@pointerInput
                     var start = 0L
                     var acc = 0f
                     detectHorizontalDragGestures(
@@ -854,7 +888,7 @@ class PlayerActivity : ComponentActivity() {
             // ── 腾讯视频式控制层：无面板、无圆角卡，只有黑渐变遮罩 ──
             // 错误态时不显示（否则中央播放键会压住「重试」按钮）
             AnimatedVisibility(
-                visible = controlsVisible && playbackError == null,
+                visible = controlsVisible && !locked && playbackError == null,
                 enter = fadeIn(motionFade(180)),
                 exit = fadeOut(motionExit(150)),
                 modifier = Modifier.fillMaxSize()
@@ -907,6 +941,19 @@ class PlayerActivity : ComponentActivity() {
                                     .padding(12.dp)
                             )
                         }
+                        // 全屏/退出全屏也放顶栏。
+                        // 底栏那个图标在竖屏时贴着屏幕最下沿、拇指够着别扭（用户反馈"竖屏找不到全屏按钮"），
+                        // 顶栏这个跟标题同一行，两种朝向下位置都稳、都好点。
+                        Icon(
+                            if (fullscreen) Icons.Rounded.FitScreen else Icons.Rounded.Fullscreen,
+                            contentDescription = if (fullscreen) "退出全屏" else "全屏",
+                            tint = Color.White,
+                            modifier = Modifier
+                                .size(48.dp)
+                                .clip(CircleShape)
+                                .clickable { fullscreen = !fullscreen }
+                                .padding(12.dp)
+                        )
                     }
 
                     // 中央播放/暂停大按钮（图标 140ms 交叉淡入淡出，不硬切）
@@ -978,6 +1025,15 @@ class PlayerActivity : ComponentActivity() {
                             }
                             Spacer(Modifier.weight(1f))
                             PlayBarButton("${speed}x") { showSpeedMenu = true }
+                            // 画质增强放在倍速旁边，而不是塞进清晰度面板：
+                            // 播放页是横屏，面板本来就贴着上下边，再挂一节「画质增强」
+                            // 会直接溢出屏幕（实拍确认：只剩一行字露在底边）。
+                            Spacer(Modifier.width(Space.lg))
+                            PlayBarButton(if (enhance) "画质增强·开" else "画质增强", active = enhance) {
+                                enhance = !enhance
+                                PlayPrefs.setEnhance(context, enhance)
+                                applyEnhance(enhance)
+                            }
                             Spacer(Modifier.width(Space.lg))
                             // 清晰度入口常驻：即使源只有单码率，也要让用户看得到"当前是自动"，
                             // 而不是点了发现按钮不存在、以为功能没做
@@ -1001,8 +1057,41 @@ class PlayerActivity : ComponentActivity() {
                                     .clickable { fullscreen = !fullscreen }
                                     .padding(11.dp)
                             )
+                            Spacer(Modifier.width(Space.md))
+                            // 防误触：躺着看剧时手滑碰到屏幕会把进度跳走，锁上就只留解锁入口
+                            Icon(
+                                Icons.Rounded.LockOpen,
+                                contentDescription = "锁定屏幕",
+                                tint = Color.White,
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clickable { locked = true; controlsVisible = false }
+                                    .padding(11.dp)
+                            )
                         }
                     }
+                }
+            }
+
+            // 锁定态：只留这一个解锁入口。必须做 —— 只加锁不给解锁会把人困在播放页里。
+            // 放在左侧居中而不是底部：躺姿下拇指够得到，且不会被进度条误触。
+            if (locked) {
+                Box(
+                    Modifier
+                        .align(Alignment.CenterStart)
+                        .padding(start = Space.lg)
+                        .size(48.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.38f))
+                        .clickable { locked = false; controlsVisible = true },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Rounded.Lock,
+                        contentDescription = "解锁",
+                        tint = Color.White,
+                        modifier = Modifier.size(22.dp)
+                    )
                 }
             }
 
@@ -1114,7 +1203,9 @@ class PlayerActivity : ComponentActivity() {
                             color = pal.inkMuted
                         )
                     } else {
-                        Column(Modifier.height(280.dp).verticalScroll(rememberScrollState())) {
+                        // 高度按横屏可视区收着给：播放页是横屏，面板再高一点就会顶出屏幕，
+                        // 原来 280dp 加上下面那节「画质增强」正好溢出（实拍只剩一行字露在底边）。
+                        Column(Modifier.height(200.dp).verticalScroll(rememberScrollState())) {
                             // 「自动」交给播放器按带宽自适应；「最高」永远用当前轨里的最高档。
                             // 两者都是"策略"，会记住；下面那些具体档位是一次性选择。
                             QualityRow("自动", selected = !preferHighest && maxHeight == 0) {
@@ -1140,41 +1231,6 @@ class PlayerActivity : ComponentActivity() {
                                 }
                             }
                         }
-                    }
-
-                    Spacer(Modifier.height(Space.md))
-                    Text(
-                        "画质增强",
-                        style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
-                        color = pal.ink
-                    )
-                    Spacer(Modifier.height(Space.xs))
-                    Row(
-                        Modifier.fillMaxWidth().clickable {
-                            enhance = !enhance
-                            PlayPrefs.setEnhance(context, enhance)
-                            applyEnhance(enhance)
-                        },
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                "边缘锐化超分",
-                                style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
-                                color = pal.ink
-                            )
-                            Text(
-                                // 说清楚它做不到什么，免得被当成"变成真 4K"
-                                "锐化边缘、提升观感，不是把片源变成真 4K；中端机可能掉帧",
-                                style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
-                                color = pal.inkMuted
-                            )
-                        }
-                        Text(
-                            if (enhance) "已开启" else "已关闭",
-                            style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
-                            color = if (enhance) pal.accent else pal.inkMuted
-                        )
                     }
                 }
             }
@@ -1340,12 +1396,14 @@ class PlayerActivity : ComponentActivity() {
     }
 }
 
-/** 腾讯视频式文字按钮：无面板，只有白字 + 按压反馈。文案变化时 150ms 交叉淡化。 */
+/** 腾讯视频式文字按钮：无面板，只有白字 + 按压反馈。文案变化时 150ms 交叉淡化。
+ *  [active] = true 用金色，给「增强已开」这类有开关语义的按钮用。 */
 @Composable
-private fun PlayBarButton(label: String, onClick: () -> Unit) {    MotionTextSwap(
+private fun PlayBarButton(label: String, active: Boolean = false, onClick: () -> Unit) {
+    MotionTextSwap(
         text = label,
         style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
-        color = Color.White,
+        color = if (active) LocalIVAN.current.accent else Color.White,
         modifier = Modifier
             .clip(RoundedCornerShape(Radius.sm))
             .clickable { onClick() }
