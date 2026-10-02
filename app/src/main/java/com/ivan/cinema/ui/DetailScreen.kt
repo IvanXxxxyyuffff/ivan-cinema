@@ -1,5 +1,10 @@
 package com.ivan.cinema.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -39,6 +44,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -52,23 +58,28 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import coil.compose.AsyncImage
 import com.ivan.cinema.IVANApp
 import com.ivan.cinema.data.Aggregator
+import com.ivan.cinema.data.FollowStore
 import com.ivan.cinema.data.MergedVod
 import com.ivan.cinema.data.VodDetail
+import com.ivan.cinema.db.FollowEntry
 import com.ivan.cinema.db.WatchEntry
 import com.ivan.cinema.ui.components.DefaultLiquid
 import com.ivan.cinema.ui.components.LiquidCard
 import com.ivan.cinema.ui.components.liquidGlass
+import com.ivan.cinema.ui.components.press
 import com.ivan.cinema.ui.components.pressDip
 import com.ivan.cinema.ui.theme.LocalIVAN
 import com.ivan.cinema.ui.theme.Radius
 import com.ivan.cinema.ui.theme.Space
 import com.ivan.cinema.ui.theme.accentBrush
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * 详情页 —— 消费者最需要的三件事按优先级排：
@@ -163,6 +174,21 @@ fun DetailScreen(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
+
+    // ── 追剧订阅自读 ──
+    // 和观看记录同理由：详情页在推入栈里长期存活，订阅状态必须自己从 DB 读，
+    // 不能只靠一次性的入参（否则在别处取消追剧后回来按钮还是「已追剧」）。
+    var followed by remember(merged.key) { mutableStateOf(false) }
+    var followTick by remember(merged.key) { mutableStateOf(0) }
+    LaunchedEffect(merged.key, followTick) {
+        followed = runCatching { FollowStore.isFollowed(ctx, merged.key) }.getOrDefault(false)
+    }
+    val followScope = rememberCoroutineScope()
+    // 通知权限只在「本页第一次订阅」时申请一次；被拒绝也照样能追剧，只是收不到提醒
+    var askedNotif by remember(merged.key) { mutableStateOf(false) }
+    val notifPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* 授权结果不改变追剧本身，只决定能否收到更新通知 */ }
 
     val current = details.getOrNull(selectedLine) ?: details.firstOrNull()
     val episodes = current?.lines?.firstOrNull()?.episodes ?: emptyList()
@@ -345,6 +371,85 @@ fun DetailScreen(
                     },
                     style = MaterialTheme.typography.titleMedium,
                     color = if (ready) pal.accentInk else pal.inkMuted
+                )
+            }
+
+            // ── ②b 追剧（次级动作：描边胶囊，紧贴播放按钮下方，不与主 CTA 抢视觉）──
+            // 详情页此时还没有源信息时不可追（追剧记录必须带 sourceApi/vodId 才能重查）
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Space.lg)
+                    .padding(top = Space.md),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                val followInteraction = remember { MutableInteractionSource() }
+                Text(
+                    if (followed) "已追剧" else "追剧",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = if (followed) pal.accentInk else if (ready) pal.ink else pal.inkMuted,
+                    modifier = Modifier
+                        .pressDip(followInteraction, to = press.control)
+                        .clip(RoundedCornerShape(Radius.pill))
+                        .background(if (followed) pal.accent else Color.Transparent)
+                        .then(
+                            if (followed) Modifier
+                            else Modifier.border(1.dp, pal.hairline, RoundedCornerShape(Radius.pill))
+                        )
+                        .clickable(
+                            enabled = ready,
+                            interactionSource = followInteraction,
+                            indication = null
+                        ) {
+                            val target = !followed
+                            followed = target
+                            followScope.launch {
+                                runCatching {
+                                    if (target) {
+                                        val d = current
+                                        if (d != null) {
+                                            FollowStore.follow(
+                                                ctx,
+                                                FollowEntry(
+                                                    vodKey = merged.key,
+                                                    name = merged.name,
+                                                    year = merged.year,
+                                                    pic = merged.pic,
+                                                    sourceApi = d.source.api,
+                                                    sourceName = d.source.name,
+                                                    vodId = d.vodId,
+                                                    episodeCount = episodes.size,
+                                                    followedAt = System.currentTimeMillis(),
+                                                    lastCheckedAt = System.currentTimeMillis()
+                                                )
+                                            )
+                                        }
+                                    } else {
+                                        FollowStore.unfollow(ctx, merged.key)
+                                    }
+                                }
+                                followTick++   // 回读 DB，让按钮反映真实落库结果
+                            }
+                            // 首次订阅时上下文申请通知权限（Android 13+）
+                            if (target && !askedNotif) {
+                                askedNotif = true
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                    ContextCompat.checkSelfPermission(
+                                        ctx, Manifest.permission.POST_NOTIFICATIONS
+                                    ) != PackageManager.PERMISSION_GRANTED
+                                ) {
+                                    notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                }
+                            }
+                        }
+                        // labelLarge 18dp + 15*2 = 48dp，达最小触摸目标
+                        .padding(horizontal = Space.lg, vertical = 15.dp)
+                )
+                Spacer(Modifier.width(Space.md))
+                Text(
+                    if (followed) "每天检查一次，更新了通知你" else "更新了通知你",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = pal.inkMutedOnGlass
                 )
             }
 

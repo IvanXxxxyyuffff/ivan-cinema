@@ -1,5 +1,8 @@
 package com.ivan.cinema.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -31,6 +34,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -42,9 +46,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.ivan.cinema.BuildConfig
@@ -52,6 +59,7 @@ import com.ivan.cinema.IVANApp
 import com.ivan.cinema.data.Account
 import com.ivan.cinema.data.ApkState
 import com.ivan.cinema.data.ApkUpdater
+import com.ivan.cinema.data.FollowStore
 import com.ivan.cinema.data.SupabaseConfig
 import com.ivan.cinema.data.UpdateChecker
 import com.ivan.cinema.data.UpdateInfo
@@ -84,16 +92,25 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
     var updateNote by remember { mutableStateOf<String?>(null) }
     var installArmed by remember { mutableStateOf(false) }
     val apkState = ApkUpdater.state.value
+    // 我的追剧：按当前账号订阅（换账号要重订，否则读到上一个账号的行）
+    val follows by remember(account?.username) { FollowStore.allFor(ctx) }
+        .collectAsState(initial = emptyList())
+    // 通知权限/渠道状态：决定追剧卡片是「更新后通知你」还是「不会提醒」
+    var notifAllowed by remember { mutableStateOf(followNotifAllowed(ctx)) }
 
     // 从「安装未知来源应用」设置页返回后自动继续安装（只自动触发一次）
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME && installArmed) {
-                installArmed = false
-                val s = ApkUpdater.state.value
-                if (s is ApkState.Ready && ApkUpdater.canInstall(ctx)) {
-                    ApkUpdater.install(ctx, s.file)
+            if (event == Lifecycle.Event.ON_RESUME) {
+                // 用户可能刚从系统设置里改了通知权限，回来要立刻反映到追剧卡片
+                notifAllowed = followNotifAllowed(ctx)
+                if (installArmed) {
+                    installArmed = false
+                    val s = ApkUpdater.state.value
+                    if (s is ApkState.Ready && ApkUpdater.canInstall(ctx)) {
+                        ApkUpdater.install(ctx, s.file)
+                    }
                 }
             }
         }
@@ -455,6 +472,77 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
             }
         }
 
+        // ── 我的追剧（MacCMS 无推送，只能每天轮询 —— 文案必须说清节奏）──
+        item {
+            LiquidCard(Modifier.fillMaxWidth(), radius = Radius.lg) {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(Space.md + 2.dp)
+                ) {
+                    Text("我的追剧", style = MaterialTheme.typography.titleMedium, color = pal.ink)
+                    Spacer(Modifier.height(Space.xs))
+                    if (follows.isEmpty()) {
+                        Text(
+                            "还没有追的剧。在详情页点「追剧」，更新了会通知你",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = pal.inkMutedOnGlass
+                        )
+                    } else {
+                        Text(
+                            if (notifAllowed) "每天检查一次更新，更新后通知你"
+                            else "每天检查一次更新；通知权限未开启，更新不会提醒",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (notifAllowed) pal.inkMutedOnGlass else pal.dangerOnGlass
+                        )
+                        Spacer(Modifier.height(Space.md))
+                        follows.forEach { f ->
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = Space.xs),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        f.name,
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = pal.ink,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        if (f.episodeCount > 0) "已更新到第 ${f.episodeCount} 集"
+                                        else "等待更新",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = pal.inkMutedOnGlass
+                                    )
+                                }
+                                val unwatch = remember { MutableInteractionSource() }
+                                Text(
+                                    "取消",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = pal.ink,
+                                    modifier = Modifier
+                                        .pressDip(unwatch, to = 0.94f)
+                                        .clip(RoundedCornerShape(Radius.pill))
+                                        .background(Color.Transparent)
+                                        .border(1.dp, pal.hairline, RoundedCornerShape(Radius.pill))
+                                        .clickable(interactionSource = unwatch, indication = null) {
+                                            scope.launch(Dispatchers.IO) {
+                                                FollowStore.unfollow(ctx, f.vodKey)
+                                            }
+                                        }
+                                        .pillHit()
+                                        .padding(horizontal = 20.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         item {
             Text(
                 "IVAN CINEMA · 自用版\n数据来自公开采集接口，仅本机使用",
@@ -506,6 +594,15 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
 /** 胶囊按钮统一 48dp 命中区，文字在最小高度内垂直居中。 */
 private fun Modifier.pillHit(): Modifier =
     this.heightIn(min = 48.dp).wrapContentHeight(Alignment.CenterVertically)
+
+/** 追剧通知是否真能到达：13+ 看运行时权限，低版本看渠道总开关。 */
+private fun followNotifAllowed(ctx: android.content.Context): Boolean = runCatching {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+        ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) !=
+        PackageManager.PERMISSION_GRANTED
+    ) false
+    else NotificationManagerCompat.from(ctx).areNotificationsEnabled()
+}.getOrDefault(true)
 
 /** 是否有可用网络：区分「已是最新」和「检查失败」的唯一本地依据。 */
 private fun hasNetwork(ctx: android.content.Context): Boolean = runCatching {

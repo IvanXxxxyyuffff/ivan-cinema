@@ -32,6 +32,8 @@ class IVANApp : Application(), ImageLoaderFactory {
         // 本地账号 + 静默检查 APP 更新
         com.ivan.cinema.data.Account.init(this)
         com.ivan.cinema.data.UpdateChecker.check(this, BuildConfig.VERSION_CODE)
+        // 追剧更新：每天检查一次（KEEP 策略，重复启动不会重置周期）
+        com.ivan.cinema.data.FollowWorker.schedule(this)
         // 云端登录态：启动即同步一次，换设备后观看记录自动回到本机
         if (com.ivan.cinema.data.Account.isCloudLoggedIn()) {
             CoroutineScope(Dispatchers.IO).launch {

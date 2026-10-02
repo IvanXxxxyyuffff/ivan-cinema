@@ -86,6 +86,7 @@ import androidx.media3.ui.PlayerView
 import com.ivan.cinema.IVANApp
 import com.ivan.cinema.data.Account
 import com.ivan.cinema.data.MacCmsApi
+import com.ivan.cinema.data.SharedHealth
 import com.ivan.cinema.data.VodSource
 import com.ivan.cinema.db.AppDb
 import com.ivan.cinema.db.WatchEntry
@@ -203,6 +204,72 @@ class PlayerActivity : ComponentActivity() {
         var currentSourceName by remember { mutableStateOf(sourceName) }
         var currentVodId by remember { mutableStateOf(vodId) }
 
+        // ── 自动容错：一条线路失败就静默换下一条，最多 3 次 ──
+        // 无限轮询会让 App 像在自己翻台，比老实报错更糟；所以硬上限 + 去重。
+        val maxAutoFailover = 3
+        // 本次「集/选源」序列里已自动尝试过几次（手动选集/换源/播放成功后清零）
+        var autoAttempts by remember { mutableStateOf(0) }
+        // 本次序列里已经失败过的源 api，避免在两个死源之间来回弹
+        var autoTriedApis by remember { mutableStateOf<Set<String>>(emptySet()) }
+        // 一次自动换源正在路上：挡住同一失败的重入，避免重复消耗尝试次数
+        var failoverInFlight by remember { mutableStateOf(false) }
+
+        /**
+         * 播放失败统一入口：静默上报 + 自动换源。
+         * 解析失败与 onPlayerError 都走这里，保证两条路径行为一致。
+         * 不做任何可能抛异常的事；换源走的是与手动换源相同的状态变量，
+         * 因此 currentEpisode / 进度保持逻辑完全复用。
+         */
+        fun handlePlaybackFailure(baseMessage: String) {
+            if (failoverInFlight) return
+            // 直链/离线播放失败与线路无关，换源也救不了本地文件：不上报、不换源
+            if (!directUrl.isNullOrEmpty()) {
+                switchingSource = false
+                playbackError = baseMessage
+                return
+            }
+            // 静默上报：能否自动换源都记一次；fire-and-forget，绝不阻塞播放、绝不弹提示
+            val failedApi = currentSourceApi
+            scope.launch { runCatching { SharedHealth.reportPlayFailure(context, failedApi, vodKey) } }
+
+            // 只有一条线路时无从换起 —— 保持原有错误浮层
+            if (lines.size < 2) {
+                switchingSource = false
+                playbackError = baseMessage
+                return
+            }
+
+            val tried = autoTriedApis + failedApi
+            autoTriedApis = tried
+
+            // 从当前线路往后找第一条没试过的线路
+            var nextIndex = -1
+            for (offset in 1 until lines.size) {
+                val idx = (lineIndex + offset) % lines.size
+                if (lines[idx].api !in tried) { nextIndex = idx; break }
+            }
+            if (nextIndex < 0 || autoAttempts >= maxAutoFailover) {
+                // 试无可试：给出诚实的错误，而不是笼统的「这条线路失效了」
+                switchingSource = false
+                playbackError = "已尝试 ${tried.size} 条线路都不行"
+                return
+            }
+
+            autoAttempts += 1
+            failoverInFlight = true
+            val keepEp = currentEpisode
+            val fromName = currentSourceName
+            playbackError = null
+            // switchingSource=true 会让下面的 resolvedUrl effect 保留当前进度，与手动换源一致
+            switchingSource = true
+            lineIndex = nextIndex
+            currentSourceApi = lines[nextIndex].api
+            currentSourceName = lines[nextIndex].name
+            currentVodId = lines[nextIndex].vodId
+            currentEpisode = keepEp.coerceAtMost((lines[nextIndex].episodes.size - 1).coerceAtLeast(0))
+            gestureHint = "线路 $fromName 不可用，已自动切到 ${lines[nextIndex].name}"
+        }
+
         val dao = remember { AppDb.get(this).watchDao() }
         val audio = remember { getSystemService(Context.AUDIO_SERVICE) as AudioManager }
 
@@ -290,6 +357,8 @@ class PlayerActivity : ComponentActivity() {
 
         LaunchedEffect(lines, lineIndex, currentEpisode) {
             if (!directUrl.isNullOrEmpty()) return@LaunchedEffect
+            // 开始解析新线路：上一轮的自动换源已经落地，放行下一次失败处理
+            failoverInFlight = false
             val line = lines.getOrNull(lineIndex)
             if (line == null) {
                 // 换源后若拿不到线路，这次切换尝试已经结束，必须把按钮放出来
@@ -315,10 +384,9 @@ class PlayerActivity : ComponentActivity() {
             if (url.isNullOrBlank()) {
                 resolvedUrl = null
                 isBuffering = false
-                playbackError = "这条线路解析不出播放地址"
-                // 解析失败是「切换尝试已结束」：resolvedUrl 变 null（或本来就是 null）
-                // 都不会让监听它的 effect 跑完清理，必须在这里收尾，否则「换源」永远被藏。
+                // 解析失败也是「线路失效」：交给统一入口决定自动换源还是报错
                 switchingSource = false
+                handlePlaybackFailure("这条线路解析不出播放地址")
             } else {
                 resolvedUrl = url
                 // 新源地址与当前相同时 resolvedUrl 不变，监听它的 effect 不会重跑，
@@ -351,6 +419,12 @@ class PlayerActivity : ComponentActivity() {
             exo.addListener(object : Player.Listener {
                 override fun onIsPlayingChanged(playing: Boolean) {
                     isPlaying = playing
+                    // 播放成功 = 本次容错序列结束，计数与去重集合清零
+                    if (playing) {
+                        autoAttempts = 0
+                        autoTriedApis = emptySet()
+                        failoverInFlight = false
+                    }
                 }
 
                 override fun onPlaybackStateChanged(state: Int) {
@@ -365,7 +439,8 @@ class PlayerActivity : ComponentActivity() {
                 override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                     resolving = false
                     isBuffering = false
-                    playbackError = "这条线路失效了"
+                    // 统一走容错入口：静默上报 + 自动换下一条线路，试无可试才报错
+                    handlePlaybackFailure("这条线路失效了")
                 }
             })
             exo.prepare()
@@ -421,12 +496,13 @@ class PlayerActivity : ComponentActivity() {
             }
         }
 
-        // 手势提示：快进/快退、亮度、音量 1400ms；换源确认 2000ms（要读得完）
+        // 手势提示：快进/快退、亮度、音量 1400ms；换源确认 / 自动容错 2000ms（要读得完）
         var hintText by remember { mutableStateOf("") }
         LaunchedEffect(gestureHint) {
             val hint = gestureHint ?: return@LaunchedEffect
             hintText = hint
-            delay(if (hint.startsWith("已切换线路")) 2000 else 1400)
+            val longHint = hint.startsWith("已切换线路") || hint.contains("已自动切到")
+            delay(if (longHint) 2000 else 1400)
             gestureHint = null
         }
 
@@ -437,6 +513,10 @@ class PlayerActivity : ComponentActivity() {
         fun playEpisode(idx: Int) {
             if (idx in episodes.indices && idx != currentEpisode) {
                 playbackError = null
+                // 手动选集 = 新的容错序列，计数与去重集合清零
+                autoAttempts = 0
+                autoTriedApis = emptySet()
+                failoverInFlight = false
                 currentEpisode = idx
             }
         }
@@ -446,6 +526,10 @@ class PlayerActivity : ComponentActivity() {
             if (lines.size < 2) return
             val keepEp = currentEpisode
             playbackError = null
+            // 手动换源 = 新的容错序列，计数与去重集合清零
+            autoAttempts = 0
+            autoTriedApis = emptySet()
+            failoverInFlight = false
             switchingSource = true
             lineIndex = (lineIndex + 1) % lines.size
             // 记录真正生效的源：保存进度时要用，否则切过源后存的还是进来那一条
