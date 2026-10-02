@@ -1,1 +1,1 @@
-{"versionCode":8,"versionName":"1.0.7","url":"https://github.com/IvanXxxxyyuffff/ivan-cinema/releases/download/v1.0.7/IVAN-CINEMA-v1.0.7.apk","notes":"设置页右侧按钮重做为细描边小药丸（原来两个字被撑成大圆饼）；金色实心只留给主操作。注册失败提示改为可照做的中文。注意：Supabase 项目需关闭「Confirm email」，否则合成邮箱收不到确认信、注册必然失败"}
+{"versionCode":9,"versionName":"1.0.8","url":"https://github.com/IvanXxxxyyuffff/ivan-cinema/releases/download/v1.0.8/IVAN-CINEMA-v1.0.8.apk","notes":"线路失效自动换源（最多 3 条，保留进度，界面说明已自动切换）；新增追剧订阅与每日更新提醒（详情页「追剧」按钮 + 设置页「我的追剧」）；新增扫码下载落地页"}
