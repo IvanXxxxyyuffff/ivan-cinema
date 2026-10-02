@@ -251,18 +251,37 @@ object Account {
         return null
     }
 
-    /** 把 Supabase 的英文错误翻成能看懂的中文；翻不了就原样返回。 */
+    /**
+     * 把 Supabase 的英文错误翻成「能照着做」的中文。
+     *
+     * 注册用的是合成邮箱（用户名@ivan-cinema.app），这个地址收不到任何邮件 ——
+     * 所以只要 Supabase 开着「Confirm email」，注册就**不可能**成功：它会去发一封
+     * 永远没人收得到的确认信，然后要么被邮箱校验挡掉，要么撞上发信频率限制。
+     * 下面几条提示都直接写清楚该去后台关哪个开关。
+     */
     private fun friendly(msg: String?): String? {
         val m = msg.orEmpty().trim()
         if (m.isEmpty()) return null
         return when {
             m.contains("already registered", true) || m.contains("already been registered", true) ->
                 "该用户名已被占用，换一个吧"
-            m.contains("Invalid login credentials", true) -> "用户名或密码不对"
+
+            (m.contains("Email address", true) && m.contains("invalid", true)) ||
+                m.contains("email_address_invalid", true) ->
+                "Supabase 拒绝了这个邮箱地址。App 用「用户名@ivan-cinema.app」当登录标识，" +
+                    "它收不到邮件，所以必须关掉邮箱验证：Supabase 后台 → Authentication → " +
+                    "Sign In / Providers → Email → 关闭「Confirm email」。"
+
+            m.contains("rate limit", true) || m.contains("too many", true) ->
+                "Supabase 发信次数超限（免费额度每小时只有几封）。根因是它仍在尝试发送验证邮件，" +
+                    "到 Supabase 后台关闭「Confirm email」后就不再发信，也不会再限流。"
+
             m.contains("Email not confirmed", true) ->
-                "这个账号需要邮箱验证。请到 Supabase 后台关闭 Confirm email 后再试"
+                "这个账号还没通过邮箱验证。到 Supabase 后台 → Authentication → " +
+                    "Sign In / Providers → Email，关闭「Confirm email」后再试。"
+
+            m.contains("Invalid login credentials", true) -> "用户名或密码不对"
             m.contains("Password should be at least", true) -> "密码至少 6 位"
-            m.contains("rate limit", true) || m.contains("too many", true) -> "操作太频繁，稍后再试"
             m.contains("Unable to validate email", true) || m.contains("invalid format", true) ->
                 "用户名格式不被接受，请换一个"
             else -> m

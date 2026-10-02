@@ -1,6 +1,7 @@
 package com.ivan.cinema.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -170,14 +171,20 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
                             modifier = Modifier
                                 .pressDip(action, to = 0.94f)
                                 .clip(RoundedCornerShape(Radius.pill))
-                                .background(
-                                    if (account == null) pal.accent else Color.White.copy(alpha = 0.14f)
+                            .background(
+                                if (account == null) pal.accent else Color.Transparent
+                            )
+                            .then(
+                                if (account == null) Modifier
+                                else Modifier.border(
+                                    1.dp, pal.hairline, RoundedCornerShape(Radius.pill)
                                 )
+                            )
                                 .clickable(interactionSource = action, indication = null) {
                                     if (account == null) onLogin() else showLogout = !showLogout
                                 }
                                 .pillHit()
-                                .padding(horizontal = Space.md)
+                                .padding(horizontal = 20.dp)
                         )
                     }
                     if (account != null && showLogout) {
@@ -191,12 +198,13 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
                                 modifier = Modifier
                                     .pressDip(svipAction, to = 0.94f)
                                     .clip(RoundedCornerShape(Radius.pill))
-                                    .background(Color.White.copy(alpha = 0.12f))
+                                    .background(Color.Transparent)
+                                .border(1.dp, pal.hairline, RoundedCornerShape(Radius.pill))
                                     .clickable(interactionSource = svipAction, indication = null) {
                                         Account.setSvip(ctx, !account.isSvip)
                                     }
                                     .pillHit()
-                                    .padding(horizontal = Space.md)
+                                    .padding(horizontal = 20.dp)
                             )
                             val logoutAction = remember { MutableInteractionSource() }
                             Text(
@@ -206,13 +214,14 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
                                 modifier = Modifier
                                     .pressDip(logoutAction, to = 0.94f)
                                     .clip(RoundedCornerShape(Radius.pill))
-                                    .background(Color.White.copy(alpha = 0.12f))
+                                    .background(Color.Transparent)
+                                .border(1.dp, pal.hairline, RoundedCornerShape(Radius.pill))
                                     .clickable(interactionSource = logoutAction, indication = null) {
                                         // 退出会清登录态，先确认
                                         confirmLogout = true
                                     }
                                     .pillHit()
-                                    .padding(horizontal = Space.md)
+                                    .padding(horizontal = 20.dp)
                             )
                         }
                     }
@@ -265,7 +274,12 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
                             modifier = Modifier
                                 .pressDip(checkAction, to = 0.94f)
                                 .clip(RoundedCornerShape(Radius.pill))
-                                .background(if (update != null) pal.accent else Color.White.copy(alpha = 0.14f))
+                                .background(if (update != null) pal.accent else Color.Transparent)
+                                .then(
+                                    if (update == null) {
+                                        Modifier.border(1.dp, pal.hairline, RoundedCornerShape(Radius.pill))
+                                    } else Modifier
+                                )
                                 .clickable(interactionSource = checkAction, indication = null) {
                                     when (val s = ApkUpdater.state.value) {
                                         is ApkState.Downloading -> ApkUpdater.cancel()
@@ -306,7 +320,7 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
                                     }
                                 }
                                 .pillHit()
-                                .padding(horizontal = Space.md)
+                                .padding(horizontal = 20.dp)
                         )
                     }
 
@@ -385,7 +399,8 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
                         modifier = Modifier
                             .pressDip(clearInteraction, to = 0.94f)
                             .clip(RoundedCornerShape(Radius.pill))
-                            .background(Color.White.copy(alpha = 0.14f))
+                            .background(Color.Transparent)
+                            .border(1.dp, pal.hairline, RoundedCornerShape(Radius.pill))
                             .clickable(interactionSource = clearInteraction, indication = null) {
                                 scope.launch(Dispatchers.IO) {
                                     File(IVANApp.app.cacheDir, "coil_images").deleteRecursively()
@@ -394,7 +409,7 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
                                 }
                             }
                             .pillHit()
-                            .padding(horizontal = Space.md)
+                            .padding(horizontal = 20.dp)
                     )
                 }
             }
@@ -425,7 +440,8 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
                         modifier = Modifier
                             .pressDip(clearInteraction, to = 0.94f)
                             .clip(RoundedCornerShape(Radius.pill))
-                            .background(Color.White.copy(alpha = 0.14f))
+                            .background(Color.Transparent)
+                            .border(1.dp, pal.hairline, RoundedCornerShape(Radius.pill))
                             .clickable(interactionSource = clearInteraction, indication = null) {
                                 scope.launch(Dispatchers.IO) {
                                     com.ivan.cinema.db.AppDb.get(IVANApp.app).searchDao().clear()
@@ -433,7 +449,7 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
                                 }
                             }
                             .pillHit()
-                            .padding(horizontal = Space.md)
+                            .padding(horizontal = 20.dp)
                     )
                 }
             }
