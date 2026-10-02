@@ -221,3 +221,36 @@ app/src/main/java/com/ivan/cinema/
     ├── components/Motion.kt   StaggerIn / pressDip / press 令牌 / portal 系列
     └── theme/                 Theme（palette/type/space/radius/springs）/ MotionPrefs
 ```
+
+---
+
+## 2026-10-02 第六轮：截图取证体系 + 五项功能 + ICON
+
+### 截图取证体系（细节见 `_dsx_probe/HARNESS.md`）
+本地 mock MacCMS 源 + `am instrument` 直跑，全量 16 屏一轮约 70s
+（原先用 `gradle connectedDebugAndroidTest` 约 4 分钟，且经常拍到错误状态）。
+脚本：`fastshots.ps1`（主页面 16 屏）/ `playershots.ps1`（播放页）/ `contactsheet.ps1`（总览图）。
+
+### 功能改动
+- **播放页换源**：右上角文字胶囊「源名 ⇄」改成一枚图标；点开下拉列出全部线路，
+  按 `SharedHealth.rankLines` 的可信度排序，最好的标「推荐」，当前那条标「当前」。
+- **播放页清晰度**：档位来自 ExoPlayer **实际视频轨高度**（`onTracksChanged` 收集），
+  不是硬编码列表 —— 采集源的 `vod_play_from` 只有 CDN 名，一个清晰度标记都没有（5 个真实源全探过）。
+  单码率时只有「自动」，这是诚实结果。应用方式：`setMaxVideoSize(MAX, height)`。
+- **动漫子专栏**：分类页在 `tab == ANIME` 时多一排 chip（全部/国漫/日漫/欧美/港台）。
+  `AnimeSub` 用 matchers 命中各源不统一的命名（国产动漫 / 日本动漫 / 日韩动漫 / 港台动漫）；
+  子专栏 `defaultTid = null` **不兜底** —— 兜底会把整库动漫当成「国漫」显示。
+- **国漫/日漫按热度排**：两段合成 —— ① B 站国创/番剧榜位次（权威，但只覆盖 5~15% 的条目）
+  ② 源站 `vod_hits` 播放量（未上榜条目的依据）。
+  腾讯 / 爱奇艺 / 优酷的公开榜单接口都试过：腾讯 `ret=0` 但 module 为空、爱奇艺 `A00000` 但 data 只有 `{base:{}}`、
+  优酷 webrank 页压根没有动漫榜模块 —— 都要登录态，所以只用 B 站。
+  ⚠️ **必须在榜单落定前压住网格不上屏**（`heatSettled`）：上屏后再重排会被 LazyGrid 的 item key
+  锚定住滚动位置，视觉上"顺序根本没变" —— 这是本轮踩到的真实缺陷，不是截图工具的锅。
+- **搜索框动效**：`portalReveal()` 从矩形裁剪改成**胶囊路径**裁剪 —— 左缘从右端往左推，
+  左缘 = 宽-高 时正好退化成一个圆，所以整段读成「缩成圆 → 再展开成搜索框」，
+  中间不换元素、不会两个形状打架。取消按钮延迟淡入（它不在裁剪范围内，不延迟会"字先到、框后到"）。
+- **APP ICON 重做**：金属渐变金环 + 环内径向透光 + 圆角播放三角 + 深色径向底；
+  几何全收在 r=36 安全区内；补了 `monochrome` 层（Android 13+ 主题图标）。
+
+### 新增数据模型字段
+`VodItem.hits`（源站 `vod_hits` 播放量）。部分源不返回该字段，此时为 0。

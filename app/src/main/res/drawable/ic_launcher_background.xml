@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  自适应图标背景层。
+
+  不是一块纯色：用径向渐变从偏暖的深紫灰过渡到接近纯黑的底色，
+  中心偏上留一点亮 —— 前景那枚金环因此有"从暗处浮起来"的层次，
+  在深色桌面上也不会糊成一块黑方块。
+  颜色取自 App 设计系统的 canvas(#0C0B10) 与 surface 系列，不另起一套色。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path android:pathData="M0,0 L108,0 L108,108 L0,108 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="radial"
+                android:centerX="46"
+                android:centerY="38"
+                android:gradientRadius="82">
+                <item android:offset="0.00" android:color="#FF26222F" />
+                <item android:offset="0.45" android:color="#FF171520" />
+                <item android:offset="1.00" android:color="#FF0A0910" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+</vector>

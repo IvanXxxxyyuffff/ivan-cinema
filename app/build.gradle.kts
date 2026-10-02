@@ -18,8 +18,8 @@ android {
         applicationId = "com.ivan.cinema"
         minSdk = 26
         targetSdk = 34
-        versionCode = 12
-        versionName = "1.0.11"
+        versionCode = 13
+        versionName = "1.0.12"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -87,6 +87,8 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer-hls:1.3.1")
     implementation("androidx.media3:media3-ui:1.3.1")
     implementation("androidx.media3:media3-datasource:1.3.1")
+    // 视频后处理（自定义 GL 着色器）：画质增强走 setVideoEffects
+    implementation("androidx.media3:media3-effect:1.3.1")
     implementation("androidx.media3:media3-exoplayer-workmanager:1.3.1")
     implementation("androidx.work:work-runtime-ktx:2.9.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

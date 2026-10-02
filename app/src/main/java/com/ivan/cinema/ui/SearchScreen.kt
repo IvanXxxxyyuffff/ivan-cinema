@@ -190,7 +190,10 @@ fun SearchScreen(
                         .fillMaxWidth()
                         .height(48.dp)
                         .graphicsLayer {
-                            val raw = ((portal.value - 0.28f) / 0.35f).coerceIn(0f, 1f)
+                            // 与 portalRevealProgress() 同一个窗口 [0.58, 0.90]：
+                            // 形状先展开成搜索框，文字再落进来。窗口提前的话，
+                            // 字会飘在一个还没长大的圆里（第一版就那样）。
+                            val raw = ((portal.value - 0.58f) / 0.32f).coerceIn(0f, 1f)
                             alpha = raw
                         }
                         .padding(horizontal = Space.md + 2.dp),
@@ -276,13 +279,19 @@ fun SearchScreen(
                 }
             }
             Spacer(Modifier.width(Space.sm))
-            // 搜索层此前没有任何关闭入口，只能靠系统返回键 —— 补一个「取消」
+            // 搜索层此前没有任何关闭入口，只能靠系统返回键 —— 补一个「取消」。
+            // 必须延迟淡入：它不在 portalReveal 的裁剪范围内，形状还是个圆的时候
+            // 它就整条弹出来，看起来像"字先到、框后到"。
+            val portalForCancel = LocalPortal.current
             val cancelInteraction = remember { MutableInteractionSource() }
             Text(
                 "取消",
                 style = MaterialTheme.typography.labelLarge,
                 color = pal.ink,
                 modifier = Modifier
+                    .graphicsLayer {
+                        alpha = ((portalForCancel.value - 0.72f) / 0.24f).coerceIn(0f, 1f)
+                    }
                     .pressDip(cancelInteraction, to = press.control)
                     .clip(RoundedCornerShape(Radius.pill))
                     .clickable(interactionSource = cancelInteraction, indication = null) {

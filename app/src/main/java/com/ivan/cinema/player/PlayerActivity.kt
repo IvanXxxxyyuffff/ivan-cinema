@@ -40,6 +40,7 @@ import androidx.compose.material.icons.rounded.FitScreen
 import androidx.compose.material.icons.rounded.Fullscreen
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -117,6 +118,26 @@ object PlayPrefs {
         ctx.getSharedPreferences("ivan_play", Context.MODE_PRIVATE).getFloat(KEY_SPEED, 1f)
     fun setSpeed(ctx: Context, v: Float) {
         ctx.getSharedPreferences("ivan_play", Context.MODE_PRIVATE).edit().putFloat(KEY_SPEED, v).apply()
+    }
+
+    /**
+     * 默认清晰度策略：false = 自动（交给播放器按带宽选），true = 尽量最高档。
+     * 默认**最高**：这是个 20 人的自用 App，主人明确要的是画质；网络差时用户自己在面板里
+     * 切回「自动」即可，选择会记住。
+     */
+    private const val KEY_QUALITY = "quality_highest"
+    fun preferHighest(ctx: Context): Boolean =
+        ctx.getSharedPreferences("ivan_play", Context.MODE_PRIVATE).getBoolean(KEY_QUALITY, true)
+    fun setPreferHighest(ctx: Context, v: Boolean) {
+        ctx.getSharedPreferences("ivan_play", Context.MODE_PRIVATE).edit().putBoolean(KEY_QUALITY, v).apply()
+    }
+
+    /** 画质增强（锐化超分）。默认关：GPU 开销随分辨率上升，中端机可能掉帧。 */
+    private const val KEY_ENHANCE = "quality_enhance"
+    fun enhance(ctx: Context): Boolean =
+        ctx.getSharedPreferences("ivan_play", Context.MODE_PRIVATE).getBoolean(KEY_ENHANCE, false)
+    fun setEnhance(ctx: Context, v: Boolean) {
+        ctx.getSharedPreferences("ivan_play", Context.MODE_PRIVATE).edit().putBoolean(KEY_ENHANCE, v).apply()
     }
 }
 
@@ -198,6 +219,26 @@ class PlayerActivity : ComponentActivity() {
         var gestureHint by remember { mutableStateOf<String?>(null) }
         var playbackError by remember { mutableStateOf<String?>(null) }
         var switchingSource by remember { mutableStateOf(false) }
+        // 换源面板 / 清晰度面板
+        var showSources by remember { mutableStateOf(false) }
+        var showQuality by remember { mutableStateOf(false) }
+        // 推荐源排序结果（api 列表，最好的在前）。null = 还没算出来
+        var rankedApis by remember { mutableStateOf<List<String>?>(null) }
+        /**
+         * 播放器**实际拿到**的视频轨高度（去重、降序）。
+         *
+         * 清晰度只能从这里出：采集源的 vod_play_from 只有 CDN 名（mtm3u8 / mtyun / lzm3u8…），
+         * 一个 1080/720 标记都没有（5 个真实源全探过）。硬编一份「标清/高清/超清」列表
+         * 点下去什么都不会变，那是假的。HLS 多码率变体才是真实存在的档位，
+         * 所以档位来自轨道，没有变体时就只有一个「自动」。
+         */
+        var qualityHeights by remember { mutableStateOf<List<Int>>(emptyList()) }
+        // 选中的上限高度，0 = 自动（不限）
+        var maxHeight by remember { mutableStateOf(0) }
+        // 默认清晰度策略：尽量最高档（自用 App，默认开；面板里可切回自动，选择会记住）
+        var preferHighest by remember { mutableStateOf(PlayPrefs.preferHighest(context)) }
+        // 画质增强（锐化超分），默认关
+        var enhance by remember { mutableStateOf(PlayPrefs.enhance(context)) }
 
         // 当前真正生效的源与影片 id：换源后会变，保存观看进度必须用它们，
         // 否则切过源之后记录里存的还是进来时那一条线路
@@ -448,6 +489,42 @@ class PlayerActivity : ComponentActivity() {
 
                 override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
                     hasSubtitle = tracks.groups.any { it.type == C.TRACK_TYPE_TEXT && it.isSupported }
+                    // 收集视频轨高度作为清晰度档位。多码率 HLS 会给出多组，
+                    // 单码率就只有一组 —— 此时面板里只会有「自动」，这是诚实的结果。
+                    val hs = LinkedHashSet<Int>()
+                    var frameRate = 0f
+                    tracks.groups.filter { it.type == C.TRACK_TYPE_VIDEO }.forEach { g ->
+                        for (i in 0 until g.length) {
+                            val f = g.getTrackFormat(i)
+                            if (f.height > 0) hs.add(f.height)
+                            if (frameRate <= 0f && f.frameRate > 0f) frameRate = f.frameRate
+                        }
+                    }
+                    val sorted = hs.sortedDescending()
+                    if (sorted != qualityHeights) qualityHeights = sorted
+
+                    // 默认清晰度：选了「最高」就用当前轨里的最高档。
+                    // 采集源绝大多数是单码率，这里多半无事发生 —— 但只要源给了多档，
+                    // 用户就不必每次手动去面板里挑。
+                    if (preferHighest && sorted.isNotEmpty()) {
+                        val top = sorted.first()
+                        if (maxHeight != top) {
+                            maxHeight = top
+                            exo.trackSelectionParameters = exo.trackSelectionParameters
+                                .buildUpon()
+                                .setMaxVideoSize(Int.MAX_VALUE, top)
+                                .build()
+                        }
+                    } else if (maxHeight != 0 && sorted.isNotEmpty() && sorted.none { it <= maxHeight }) {
+                        // 换集/换源后旧的高度上限可能已经不存在，回落自动，避免"选了 1080 却是空"
+                        maxHeight = 0
+                    }
+
+                    // 按内容帧率挑刷新率档：24fps 在 60Hz 上是 3:2 下拉（必然抖），
+                    // 在 120Hz 上是 5:5（均匀）。零成本、真收益，所以不需要开关。
+                    if (frameRate > 1f) {
+                        runCatching { com.ivan.cinema.ui.runtime.RefreshRate.applyForContent(this@PlayerActivity, frameRate) }
+                    }
                 }
 
                 override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
@@ -553,6 +630,62 @@ class PlayerActivity : ComponentActivity() {
             // 新源集数可能更少：夹到最后一集
             currentEpisode = keepEp.coerceAtMost((lines[lineIndex].episodes.size - 1).coerceAtLeast(0))
             gestureHint = "已切换线路：${lines[lineIndex].name}"
+        }
+
+        /**
+         * 直接选中第 [index] 条线路（下拉里点某一条源）。
+         * 与 [switchSource] 的区别只是「跳着选」而不是「轮下一个」，
+         * 容错计数清零、集数夹取、源记录三件事必须完全一致 —— 所以共用一段实现。
+         */
+        fun selectSource(index: Int) {
+            if (index !in lines.indices || index == lineIndex) return
+            val keepEp = currentEpisode
+            playbackError = null
+            autoAttempts = 0
+            autoTriedApis = emptySet()
+            failoverInFlight = false
+            switchingSource = true
+            lineIndex = index
+            currentSourceApi = lines[index].api
+            currentSourceName = lines[index].name
+            currentVodId = lines[index].vodId
+            currentEpisode = keepEp.coerceAtMost((lines[index].episodes.size - 1).coerceAtLeast(0))
+            gestureHint = "已切换线路：${lines[index].name}"
+        }
+
+        /** 应用清晰度上限。height = 0 表示自动（不限制）。 */
+        fun applyQuality(height: Int) {
+            maxHeight = height
+            exo.trackSelectionParameters = exo.trackSelectionParameters
+                .buildUpon()
+                .setMaxVideoSize(Int.MAX_VALUE, if (height == 0) Int.MAX_VALUE else height)
+                .build()
+            gestureHint = if (height == 0) "清晰度：自动" else "清晰度：${height}P"
+        }
+
+        /**
+         * 开关画质增强。
+         *
+         * 视频后处理要求解码器输出到 GL，部分设备/编码格式走不通，硬开可能直接黑屏。
+         * 所以这里全程 runCatching：抛异常就回滚开关状态并明确告诉用户"这台设备不支持"，
+         * 而不是留一个开着但没生效的假开关。
+         */
+        fun applyEnhance(on: Boolean) {
+            runCatching {
+                exo.setVideoEffects(if (on) listOf(SharpenEffect()) else emptyList())
+            }.onFailure {
+                enhance = false
+                PlayPrefs.setEnhance(context, false)
+                gestureHint = "这台设备不支持画质增强"
+            }.onSuccess {
+                gestureHint = if (on) "画质增强：开" else "画质增强：关"
+            }
+        }
+
+        // 上次开着就恢复。放在这里而不是更早：applyEnhance 是局部函数，
+        // 只能在声明之后调用。
+        LaunchedEffect(Unit) {
+            if (enhance) applyEnhance(true)
         }
 
         Box(
@@ -760,16 +893,18 @@ class PlayerActivity : ComponentActivity() {
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f)
                         )
+                        // 切换源：只留一个图标。原来是一枚「暴风资源 ⇄」文字胶囊，
+                        // 源名长短不一，长名字会把标题挤没；点开才是源列表。
                         if (lines.size > 1 && !switchingSource) {
-                            Text(
-                                "${currentLine?.name ?: ""} ⇄",
-                                style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
-                                color = Color.White.copy(alpha = 0.92f),
+                            Icon(
+                                Icons.Rounded.SwapHoriz,
+                                contentDescription = "切换播放源",
+                                tint = Color.White,
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(Radius.pill))
-                                    .background(Color.White.copy(alpha = 0.16f))
-                                    .clickable { switchSource() }
-                                    .padding(horizontal = Space.md, vertical = Space.xs + 2.dp)
+                                    .size(48.dp)
+                                    .clip(CircleShape)
+                                    .clickable { showSources = true }
+                                    .padding(12.dp)
                             )
                         }
                     }
@@ -843,6 +978,12 @@ class PlayerActivity : ComponentActivity() {
                             }
                             Spacer(Modifier.weight(1f))
                             PlayBarButton("${speed}x") { showSpeedMenu = true }
+                            Spacer(Modifier.width(Space.lg))
+                            // 清晰度入口常驻：即使源只有单码率，也要让用户看得到"当前是自动"，
+                            // 而不是点了发现按钮不存在、以为功能没做
+                            PlayBarButton(if (maxHeight == 0) "清晰度" else "${maxHeight}P") {
+                                showQuality = true
+                            }
                             // 没有字幕轨时不显示入口：点了只会开出一个死胡同面板
                             if (hasSubtitle) {
                                 Spacer(Modifier.width(Space.lg))
@@ -886,6 +1027,155 @@ class PlayerActivity : ComponentActivity() {
                         style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
                         color = Color.White
                     )
+                }
+            }
+
+            // ── 切换源面板：列出所有线路，按可信度排，最好的标「推荐」 ──
+            LaunchedEffect(showSources) {
+                if (showSources) {
+                    rankedApis = runCatching {
+                        SharedHealth.rankLines(context, lines.map { it.api })
+                    }.getOrNull()
+                }
+            }
+            if (showSources) {
+                // 推荐顺序 = SharedHealth 的可信度排序（坏源降权在后）；拿不到就按原顺序，
+                // 并把第一条当推荐 —— 至少保证"推荐"这个位置永远有东西
+                val order = rankedApis ?: lines.map { it.api }
+                val ordered = order.mapNotNull { api -> lines.indexOfFirst { it.api == api }
+                    .takeIf { it >= 0 }?.let { it to lines[it] } }
+                    .let { if (it.isEmpty()) lines.mapIndexed { i, l -> i to l } else it }
+                MenuSheet(onDismiss = { showSources = false }) {
+                    Text(
+                        "选择播放源",
+                        style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
+                        color = pal.ink
+                    )
+                    Spacer(Modifier.height(Space.sm + 2.dp))
+                    Column(Modifier.height(320.dp).verticalScroll(rememberScrollState())) {
+                        ordered.forEachIndexed { rank, (idx, line) ->
+                            val on = idx == lineIndex
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(Radius.sm + 2.dp))
+                                    .background(if (on) pal.accent.copy(alpha = 0.16f) else Color.Transparent)
+                                    .clickable {
+                                        showSources = false
+                                        selectSource(idx)
+                                    }
+                                    .padding(horizontal = Space.md, vertical = 15.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    line.name,
+                                    style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
+                                    color = if (on) pal.accent else pal.ink,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                if (rank == 0 && !on) {
+                                    Text(
+                                        "推荐",
+                                        style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
+                                        color = pal.accentInk,
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(Radius.pill))
+                                            .background(pal.accent)
+                                            .padding(horizontal = Space.sm, vertical = 2.dp)
+                                    )
+                                    Spacer(Modifier.width(Space.sm))
+                                }
+                                Text(
+                                    if (on) "当前" else "${line.episodes.size} 集",
+                                    style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
+                                    color = pal.inkMuted
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── 清晰度面板：档位来自播放器实际拿到的视频轨 ──
+            if (showQuality) {
+                MenuSheet(onDismiss = { showQuality = false }) {
+                    Text(
+                        "清晰度",
+                        style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
+                        color = pal.ink
+                    )
+                    Spacer(Modifier.height(Space.sm + 2.dp))
+                    if (qualityHeights.isEmpty()) {
+                        Text(
+                            "这条线路只有一个码率，没有可切换的档位",
+                            style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
+                            color = pal.inkMuted
+                        )
+                    } else {
+                        Column(Modifier.height(280.dp).verticalScroll(rememberScrollState())) {
+                            // 「自动」交给播放器按带宽自适应；「最高」永远用当前轨里的最高档。
+                            // 两者都是"策略"，会记住；下面那些具体档位是一次性选择。
+                            QualityRow("自动", selected = !preferHighest && maxHeight == 0) {
+                                preferHighest = false
+                                maxHeight = 0
+                                PlayPrefs.setPreferHighest(context, false)
+                                exo.trackSelectionParameters = exo.trackSelectionParameters
+                                    .buildUpon().setMaxVideoSize(Int.MAX_VALUE, Int.MAX_VALUE).build()
+                            }
+                            QualityRow(
+                                "最高（${qualityHeights.first()}P）",
+                                selected = preferHighest
+                            ) {
+                                preferHighest = true
+                                PlayPrefs.setPreferHighest(context, true)
+                                applyQuality(qualityHeights.first())
+                            }
+                            qualityHeights.forEach { h ->
+                                QualityRow("${h}P", selected = !preferHighest && maxHeight == h) {
+                                    preferHighest = false
+                                    PlayPrefs.setPreferHighest(context, false)
+                                    applyQuality(h)
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(Space.md))
+                    Text(
+                        "画质增强",
+                        style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
+                        color = pal.ink
+                    )
+                    Spacer(Modifier.height(Space.xs))
+                    Row(
+                        Modifier.fillMaxWidth().clickable {
+                            enhance = !enhance
+                            PlayPrefs.setEnhance(context, enhance)
+                            applyEnhance(enhance)
+                        },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "边缘锐化超分",
+                                style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
+                                color = pal.ink
+                            )
+                            Text(
+                                // 说清楚它做不到什么，免得被当成"变成真 4K"
+                                "锐化边缘、提升观感，不是把片源变成真 4K；中端机可能掉帧",
+                                style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
+                                color = pal.inkMuted
+                            )
+                        }
+                        Text(
+                            if (enhance) "已开启" else "已关闭",
+                            style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
+                            color = if (enhance) pal.accent else pal.inkMuted
+                        )
+                    }
                 }
             }
 
@@ -1052,8 +1342,7 @@ class PlayerActivity : ComponentActivity() {
 
 /** 腾讯视频式文字按钮：无面板，只有白字 + 按压反馈。文案变化时 150ms 交叉淡化。 */
 @Composable
-private fun PlayBarButton(label: String, onClick: () -> Unit) {
-    MotionTextSwap(
+private fun PlayBarButton(label: String, onClick: () -> Unit) {    MotionTextSwap(
         text = label,
         style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
         color = Color.White,
@@ -1062,6 +1351,35 @@ private fun PlayBarButton(label: String, onClick: () -> Unit) {
             .clickable { onClick() }
             .padding(horizontal = 9.dp, vertical = 15.dp)
     )
+}
+
+/** 清晰度面板里的一行：整行可点，选中态用金色底 + 右侧「当前」。 */
+@Composable
+private fun QualityRow(label: String, selected: Boolean, onClick: () -> Unit) {
+    val pal = LocalIVAN.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(Radius.sm + 2.dp))
+            .background(if (selected) pal.accent.copy(alpha = 0.16f) else Color.Transparent)
+            .clickable { onClick() }
+            .padding(horizontal = Space.md, vertical = 15.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            label,
+            style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
+            color = if (selected) pal.accent else pal.ink,
+            modifier = Modifier.weight(1f)
+        )
+        if (selected) {
+            Text(
+                "当前",
+                style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
+                color = pal.inkMuted
+            )
+        }
+    }
 }
 
 @Composable

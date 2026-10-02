@@ -254,6 +254,17 @@ object Aggregator {
     suspend fun resolveClassMap(
         sources: List<VodSource>,
         tab: HomeTab
+    ): ClassResolve = resolveClassMap(sources, tab.matchers, tab.defaultTid)
+
+    /**
+     * 同上，但按任意 matchers / defaultTid 解析 —— 动漫的子专栏（国漫/日漫）走这条。
+     * [defaultTid] 为 null 时，分类名不命中的源会被跳过而不是兜底：子专栏没有通用 tid，
+     * 兜底会把整库动漫塞进「国漫」里，那是错的。
+     */
+    suspend fun resolveClassMap(
+        sources: List<VodSource>,
+        matchers: List<String>,
+        defaultTid: String?
     ): ClassResolve = coroutineScope {
         val sem = Semaphore(10)
         val ok = HashMap<String, Boolean>()
@@ -265,18 +276,17 @@ object Aggregator {
                     return@async null
                 }
                 val hit = cs.firstOrNull { (_, n) ->
-                    tab.matchers.any { m -> n.contains(m) }
+                    matchers.any { m -> n.contains(m) }
                 }
                 if (hit == null) {
                     // 源连通但分类名不匹配：主分类（电影/剧集/综艺/动漫）走通用 tid 兜底；
-                    // 扩展分类（纪录片/少儿/体育/短剧）没有通用 tid —— 跳过该源，避免显示错内容
-                    val fallback = tab.defaultTid
-                    if (fallback == null) {
+                    // 扩展分类（纪录片/少儿/体育/短剧、动漫子专栏）没有通用 tid —— 跳过该源
+                    if (defaultTid == null) {
                         ok[src.name] = true
                         null
                     } else {
                         ok[src.name] = true
-                        src.api to fallback
+                        src.api to defaultTid
                     }
                 } else {
                     ok[src.name] = true
@@ -302,4 +312,28 @@ enum class HomeTab(
     KIDS("少儿", null, listOf("少儿", "儿童", "亲子")),
     SPORTS("体育", null, listOf("体育", "足球", "篮球")),
     SHORT("短剧", null, listOf("短剧", "微短剧"))
+}
+
+/**
+ * 动漫的子专栏。
+ *
+ * 各源对动漫的分类命名不统一（茅台是「国产动漫/日本动漫/欧美动漫」，
+ * 量子/最大/无尽是「国产动漫/日韩动漫/欧美动漫/港台动漫」），所以每个专栏给一组
+ * matchers 去命中，而不是写死 tid。
+ *
+ * [defaultTid] 只有 [ALL] 有（MacCMS 通用约定 4=动漫）：子专栏一旦兜底就会把整库动漫
+ * 当成「国漫」显示，宁可不显示也不能显示错的。
+ */
+enum class AnimeSub(
+    val title: String,
+    /** 分类映射的缓存 key。必须和 HomeTab.name 区分开，否则「国漫」会读到「动漫」的缓存。 */
+    val cacheKey: String,
+    val matchers: List<String>,
+    val defaultTid: String?
+) {
+    ALL("全部", "ANIME_ALL", listOf("动漫", "动画"), "4"),
+    CN("国漫", "ANIME_CN", listOf("国产动漫", "国产动画", "国漫"), null),
+    JP("日漫", "ANIME_JP", listOf("日本动漫", "日韩动漫", "日漫"), null),
+    US("欧美", "ANIME_US", listOf("欧美动漫", "欧美动画"), null),
+    HK("港台", "ANIME_HK", listOf("港台动漫", "港台动画"), null)
 }

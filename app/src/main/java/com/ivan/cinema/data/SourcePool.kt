@@ -11,12 +11,15 @@ object SourcePool {
 
     fun load(ctx: Context): List<VodSource> {
         cached?.let { return it }
-        // 优先外部热更新文件，缺失则回退 assets 内置
+        // 覆盖优先级：应用内部 files/ → 外部 files/（热更新）→ assets 内置。
+        // 内部目录排最前是因为它不需要任何存储权限就能写入（adb run-as 可直接改），
+        // 排查/取证时能换源而不用重打包；正式分发只用到 assets 那一路。
+        val internal = File(ctx.filesDir, "sources.json")
         val external = File(ctx.getExternalFilesDir(null), "sources.json")
-        val text: String = if (external.isFile) {
-            external.readText()
-        } else {
-            ctx.assets.open("sources.json").bufferedReader().use { it.readText() }
+        val text: String = when {
+            internal.isFile -> internal.readText()
+            external.isFile -> external.readText()
+            else -> ctx.assets.open("sources.json").bufferedReader().use { it.readText() }
         }
         val list = parse(text)
         cached = list

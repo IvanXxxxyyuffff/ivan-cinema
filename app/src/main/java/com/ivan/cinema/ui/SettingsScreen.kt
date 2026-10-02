@@ -145,6 +145,61 @@ fun SettingsScreen(contentBottomPadding: Dp = 0.dp, onBack: () -> Unit = {}) {
             }
         }
 
+        // ── 源清单更新（远程清单，不用发版就能换源）──
+        item {
+            val applied by com.ivan.cinema.data.SourceUpdater.appliedVersion
+            val remote by com.ivan.cinema.data.SourceUpdater.remoteVersion
+            val srcStatus by com.ivan.cinema.data.SourceUpdater.status
+            var checking by remember { mutableStateOf(false) }
+            var srcNote by remember { mutableStateOf<String?>(null) }
+
+            LiquidCard(Modifier.fillMaxWidth(), radius = Radius.lg) {
+                Column(Modifier.fillMaxWidth().padding(Space.md + 2.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "源清单",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = pal.ink
+                            )
+                            Text(
+                                srcNote ?: srcStatus
+                                ?: if (applied > 0) "已应用第 $applied 版（远端第 $remote 版）"
+                                else "内置清单（远端第 $remote 版）",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = pal.inkMuted
+                            )
+                        }
+                        val srcAction = remember { MutableInteractionSource() }
+                        Text(
+                            if (checking) "检查中…" else "检查更新",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = pal.ink,
+                            modifier = Modifier
+                                .pressDip(srcAction, to = press.control)
+                                .clip(RoundedCornerShape(Radius.pill))
+                                .border(1.dp, pal.hairline, RoundedCornerShape(Radius.pill))
+                                .clickable(interactionSource = srcAction, indication = null) {
+                                    if (checking) return@clickable
+                                    checking = true
+                                    srcNote = null
+                                    scope.launch {
+                                        val changed = runCatching {
+                                            com.ivan.cinema.data.SourceUpdater.check(ctx, force = true)
+                                        }.getOrDefault(false)
+                                        checking = false
+                                        srcNote = if (changed) "已更新源清单，回到首页即生效"
+                                        else (com.ivan.cinema.data.SourceUpdater.status.value ?: "检查完成")
+                                    }
+                                }
+                                .pillHit()
+                                .padding(horizontal = 20.dp)
+                        )
+                    }
+                }
+            }
+        }
+
         // ── 检查更新（应用内下载 + 安装，全程不跳浏览器）──
         item {
             LiquidCard(Modifier.fillMaxWidth(), radius = Radius.lg) {

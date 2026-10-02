@@ -36,6 +36,14 @@ object SourceHealth {
     private const val KEY_TS = "verified_at"
     private const val TTL_MS = 24L * 60 * 60 * 1000
 
+    /**
+     * 保留多少源。原来是 10 —— 但探测下来 18 个源是活的，砍到 10 个会把
+     * **带「4K电影」分类的最大资源（优先级第 13）和 bdzy（第 14）整条丢掉**，
+     * 用户就永远拿不到那一路的高码率内容。提到 14：既覆盖到全部有 4K 分类的源，
+     * 又不至于把 18 个源全铺开拖慢聚合（每源一次 classes 探测 + 一次列表请求）。
+     */
+    private const val MAX_SOURCES = 14
+
     /** 已核验的源（null = 还没结果，调用方回退全量）。 */
     val verified = mutableStateOf<List<VodSource>?>(null)
 
@@ -82,7 +90,7 @@ object SourceHealth {
                     { s -> if (SharedHealth.isBad(stats[s.api])) 1 else 0 },
                     { s -> PRIORITY.indexOf(s.name).let { if (it < 0) 999 else it } }
                 )
-            ).take(10)
+            ).take(MAX_SOURCES)
             verified.value = ranked
             app.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit()
                 .putString(KEY_JSON, toJson(ranked))

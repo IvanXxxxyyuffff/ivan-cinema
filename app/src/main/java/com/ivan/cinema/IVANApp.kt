@@ -31,6 +31,13 @@ class IVANApp : Application(), ImageLoaderFactory {
         )
         // 启动时静默核验源（后台，不阻塞首屏；24h 内不重复）
         com.ivan.cinema.data.SourceHealth.init(this)
+        // 源清单自动更新：仓库里的 sources_manifest.json 有新版本就写进 filesDir，
+        // 而 SourcePool 本来就优先读 filesDir —— 读取侧一行都不用改。
+        // 必须放在 SourceHealth.init 之后：更新成功时 check() 内部会再调一次
+        // SourceHealth.refresh，用新源重新探测排序。
+        CoroutineScope(Dispatchers.IO).launch {
+            runCatching { com.ivan.cinema.data.SourceUpdater.check(this@IVANApp) }
+        }
         // 本地账号 + 静默检查 APP 更新
         com.ivan.cinema.data.Account.init(this)
         // 崩溃兜底：装未捕获异常处理器，本地落盘、下次启动上报，并清理过期记录。

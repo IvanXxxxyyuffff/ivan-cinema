@@ -15,8 +15,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextStyle
@@ -202,29 +205,40 @@ fun Modifier.portalIn(to: PortalTo, index: Int = 0): Modifier =
     portal(to, index, restingHigh = true)
 
 /**
- * 搜索框的「裁剪揭示」：右缘固定、向左逐渐展开（纯绘制期，零布局抖动）。
- * 展开窗口 [0.02, 0.55]（轴的前半段），缓动 EaseOut —— 起步快、末段慢慢贴住。
+ * 搜索框的「圆形 → 搜索框」揭示。
+ *
+ * 不是简单的矩形裁剪：裁剪路径是一条**胶囊**（圆角半径恒为半高），
+ * 它的左缘从右端往左推 ——
+ *   · 左缘 = 宽 - 高 时，胶囊正好退化成一个**圆**（贴在右端）；
+ *   · 左缘 = 0 时，就是完整的一条搜索框。
+ * 所以整段动效天然读成「右侧缩成一个圆 → 再展开成搜索框」，中间不需要换元素、
+ * 不会出现两个形状打架。
+ *
+ * 展开窗口 [0.30, 0.92]：前 30% 留给首页那层退场，让"收"和"展"分成两拍。
  */
 @Composable
 fun Modifier.portalReveal(): Modifier {
     val m = LocalPortal.current
     if (MotionPrefs.reduce) return this
     return this.drawWithContent {
-        val raw = ((m.value - 0.02f) / 0.53f).coerceIn(0f, 1f)
+        val raw = ((m.value - 0.30f) / 0.62f).coerceIn(0f, 1f)
+        // EaseOut：起步快、末段慢慢贴住
         val eased = 1f - (1f - raw) * (1f - raw)
-        val left = size.width * (1f - eased)
-        clipRect(left = left, top = 0f, right = size.width, bottom = size.height) {
-            this@drawWithContent.drawContent()
+        val h = size.height
+        val r = h / 2f
+        val left = (size.width - h) * (1f - eased)
+        val path = Path().apply {
+            addRoundRect(RoundRect(left, 0f, size.width, size.height, CornerRadius(r, r)))
         }
+        clipPath(path) { this@drawWithContent.drawContent() }
     }
 }
 
-/** 揭示进度（0→1），给框内文字/图标的延迟淡入用。 */
+/** 揭示进度（0→1），给框内文字/图标的延迟淡入用。窗口要晚于形状展开，否则字会飘在圆里。 */
 @Composable
 fun portalRevealProgress(): Float {
     val m = LocalPortal.current
-    val raw = ((m.value - 0.28f) / 0.35f).coerceIn(0f, 1f)
-    return raw
+    return ((m.value - 0.58f) / 0.32f).coerceIn(0f, 1f)
 }
 
 @Composable

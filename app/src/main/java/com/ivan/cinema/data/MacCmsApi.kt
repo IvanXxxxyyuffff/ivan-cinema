@@ -127,7 +127,9 @@ class MacCmsApi(private val source: VodSource) {
                     pic = v.optString("vod_pic").trim(),
                     remarks = v.optString("vod_remarks").trim(),
                     typeId = v.optString("type_id").trim(),
-                    blurb = firstSentence(v.optString("vod_content"))
+                    blurb = firstSentence(v.optString("vod_content")),
+                    // vod_hits 可能是字符串也可能是数字，部分源干脆不给 —— 统一按 0 处理
+                    hits = v.optString("vod_hits").trim().toIntOrNull() ?: 0
                 )
             )
         }

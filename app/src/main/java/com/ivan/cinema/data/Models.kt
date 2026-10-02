@@ -14,7 +14,13 @@ data class VodItem(
     val remarks: String,
     val typeId: String,
     /** 一句话简介（列表接口自带），用作卡片副标题 */
-    val blurb: String = ""
+    val blurb: String = "",
+    /**
+     * 源站播放量（MacCMS 的 vod_hits）。动漫专栏按热度排时作为第二信号 ——
+     * B 站榜只覆盖到 5~15% 的条目，剩下那些总得有个依据，不能全靠源站顺序。
+     * 部分源不返回该字段，此时为 0。
+     */
+    val hits: Int = 0
 )
 
 /** 一个片在各源的命中 */
