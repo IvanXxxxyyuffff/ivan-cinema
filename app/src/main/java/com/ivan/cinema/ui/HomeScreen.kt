@@ -53,6 +53,7 @@ import com.ivan.cinema.IVANApp
 import com.ivan.cinema.prefetch
 import com.ivan.cinema.data.Aggregator
 import com.ivan.cinema.data.ClassCache
+import com.ivan.cinema.data.HeatRank
 import com.ivan.cinema.data.HomeTab
 import com.ivan.cinema.data.MergedVod
 import com.ivan.cinema.data.SourceHealth
@@ -173,7 +174,21 @@ fun HomeScreen(
         }
     }
 
-    val list = items
+    // 动漫 tab 直接按平台榜单优先展示：国创榜（国漫）+ 番剧榜（日漫）拼成一张榜，
+    // 上榜的按榜位排前面，没上榜的保持源站原顺序跟在后面（稳定排序）。
+    // 只在动漫 tab 生效 —— 电影/剧集没有对口的公开榜单，硬套会变成乱序。
+    var heat by remember(tab) { mutableStateOf<List<String>>(emptyList()) }
+    LaunchedEffect(tab) {
+        heat = if (tab != HomeTab.ANIME) emptyList() else {
+            val guo = runCatching { HeatRank.load(ctx, HeatRank.Kind.GUOCHUANG) }.getOrDefault(emptyList())
+            val fan = runCatching { HeatRank.load(ctx, HeatRank.Kind.FANJU) }.getOrDefault(emptyList())
+            guo + fan
+        }
+    }
+    val list = remember(items, heat) {
+        val l = items ?: return@remember null
+        if (heat.isEmpty()) l else l.sortedBy { HeatRank.rankOf(heat, it.name) }
+    }
     val banner = list?.firstOrNull { it.pic.isNotEmpty() }
     // 原来是 drop(1).take(24)：既把网格硬砍到 24 条（后面分页全白加载），
     // 又在首项没有封面时把第 2 条同时当作 banner 和卡片。改成按 key 排除 banner。
