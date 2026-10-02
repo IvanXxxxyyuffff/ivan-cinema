@@ -174,7 +174,7 @@ fun HomeScreen(
         }
     }
 
-    // 动漫 tab 直接按平台榜单优先展示：国创榜（国漫）+ 番剧榜（日漫）拼成一张榜，
+    // 动漫 tab 直接按平台榜单优先展示：国漫综合热度 + 日漫综合热度拼成一张榜，
     // 上榜的按榜位排前面，没上榜的保持源站原顺序跟在后面（稳定排序）。
     // 只在动漫 tab 生效 —— 电影/剧集没有对口的公开榜单，硬套会变成乱序。
     var heat by remember(tab) { mutableStateOf<List<String>>(emptyList()) }
