@@ -276,16 +276,24 @@ fun SettingsScreen(contentBottomPadding: Dp = 0.dp, onBack: () -> Unit = {}) {
                                                 updateNote = "正在检查…"
                                                 scope.launch {
                                                     UpdateChecker.check(ctx, BuildConfig.VERSION_CODE)
-                                                    // 镜像超时 6s，最多等 7.5s
+                                                    // 镜像超时 6s + 竞速宽限 1.5s，最多等 9s
                                                     var waited = 0
-                                                    while (waited < 7500 && UpdateChecker.latest.value == null) {
+                                                    while (waited < 9000 &&
+                                                        UpdateChecker.status.value == UpdateChecker.Status.Checking
+                                                    ) {
                                                         delay(300)
                                                         waited += 300
                                                     }
-                                                    updateNote = when {
-                                                        UpdateChecker.latest.value != null -> null
-                                                        !hasNetwork(ctx) -> "检查失败，稍后再试"
-                                                        else -> "已是最新版本"
+                                                    // 必须按 status 分辨，不能再看 latest 是否为 null：
+                                                    // 那等于把"网络挂了"和"确实没更新"显示成同一句话，
+                                                    // 用户会以为自己已经是最新版（这正是之前的 bug）。
+                                                    updateNote = when (UpdateChecker.status.value) {
+                                                        UpdateChecker.Status.Found -> null
+                                                        UpdateChecker.Status.Failed ->
+                                                            "检查失败：镜像都不可达，稍后再试"
+                                                        UpdateChecker.Status.UpToDate ->
+                                                            "已是最新版本 ${BuildConfig.VERSION_NAME}"
+                                                        else -> "检查超时，稍后再试"
                                                     }
                                                     delay(4000)
                                                     updateNote = null
