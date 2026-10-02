@@ -83,12 +83,15 @@ object SourceUpdater {
                 return@withContext false
             }
 
-            val ok = runCatching {
-                File(ctx.filesDir, "sources.json")
-                    .writeText(JSONArray(manifest.second).toString())
-            }.isSuccess
-            if (!ok) {
-                status.value = "写入失败"
+            val target = File(ctx.filesDir, "sources.json")
+            // 直接用 JSONArray.toString() —— 原来写的 `JSONArray(manifest.second)` 是错的：
+            // JSONArray 没有「拷贝另一个 JSONArray」的构造器，那一行会抛异常，
+            // 于是每次都被 catch 成"写入失败"（用户实际看到的就是这个）。
+            val text = manifest.second.toString()
+            val err = runCatching { target.writeText(text) }.exceptionOrNull()
+            if (err != null) {
+                // 把真实原因带上：只写"写入失败"没法排查
+                status.value = "写入失败：${err.javaClass.simpleName} ${err.message?.take(40) ?: ""}"
                 return@withContext false
             }
 
