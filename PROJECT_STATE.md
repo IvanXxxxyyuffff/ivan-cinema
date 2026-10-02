@@ -254,3 +254,52 @@ app/src/main/java/com/ivan/cinema/
 
 ### 新增数据模型字段
 `VodItem.hits`（源站 `vod_hits` 播放量）。部分源不返回该字段，此时为 0。
+
+---
+
+## 2026-10-02 第七轮：抓平台榜、播放提速、播放器交互
+
+### 平台热度榜（目标：国漫按多平台综合热度排）
+- **B站国创/番剧榜**：公开接口，`api.bilibili.com/pgc/season/rank/web/list?season_type=4|1`，直接可用。
+  已接入 `HeatRank`，国漫/日漫专栏与首页动漫 tab 都按它排。
+- **腾讯视频**：接口 `pbaccess.video.qq.com/trpc.vector_layout.page_view.PageService/getPage`。
+  ⚠️ **必须用页面真实发出的请求体重放**（`page_type:"channel"` + `page_id:"100119"`）。
+  自己拼 `channel_list`/`100113` 时接口照样返回 `ret=0`，但 module 是空的 ——
+  **参数错一个字就是空数据，接口不报错**。已抓 34 部，存 `_dsx_probe/heat/tx_rank.json`，**尚未并入 App**。
+- **爱奇艺**：`/trending/` 是「壳 + iframe」，榜单真身在 `https://www.iqiyi.com/ranks1PCW/home`。
+  直接进这个地址能拿到总榜（带名次/分类/弹幕数/热度值，好解析）。
+  但**分类行（总榜/热搜/…/动漫）在调试窗口里没渲染**，DOM 里查不到任何「总榜」「动漫」元素，切不过去。
+- **优酷**：webrank 页没有动漫榜模块，只有轮播 + 纪录片/科技。放弃。
+- 抓取链路：日常 Chrome 的 Cookies 是**独占打开**的，`Copy-Item` 和共享读都失败，
+  只有 `robocopy /B`（备份模式）能抠出来；Chrome 136+ 对默认 profile 会忽略 `--remote-debugging-port`，
+  所以要复制 `Local State` + `Default\Network\Cookies` 到独立目录再起实例。脚本见 `_dsx_probe/make_cdp_profile.ps1` / `fix_cdp_cookies.ps1`。
+
+### 播放提速
+瓶颈**不在聚合**，在 `PlayResolver`：采集源给的播放地址大多**是个网页**
+（`play.xluuss.com/play/xxx` 这种），解析要再发 1~2 次 HTTP 抓 HTML 挖真 m3u8，
+每次最长 10s、串行、每次播放都重做。
+- 已做：**详情页预热**（进详情页就后台解析第一条线路第一集）+ **解析结果缓存 30 分钟**。
+  解析不出真地址的也缓存（TTL 减半），避免同一集反复打两次没结果的请求。
+- 未做：并发解析前 3 条线路取先成功者（要改选线语义，需单独验证）。
+
+### 播放器交互（都是用户实测反馈的）
+- **锁屏/切后台还在播**：原来只处理了 `ACTION_SCREEN_OFF`，按 Home 切走走的是 `onStop`，没管。
+  现在 `onStop` 也暂停；播放器引用交给 Activity（`player` 字段 + `DisposableEffect`）。
+- **防误触锁**：底栏最右锁图标，锁上后屏蔽全部手势/点击；解锁入口**显示 5 秒后自动隐去**，
+  点屏幕再亮 5 秒（用 tick 计数让重复点能重新计时），固定左侧居中。
+- **全屏按钮**：曾在顶栏和底栏各放一个（重复），现只留**顶栏**那个。
+- **竖屏底栏被裁**：功能按钮改**横向可滚动**，锁定按钮固定在右侧不参与滚动。
+
+### 其它修复
+- **「源清单写入失败」**：`SourceUpdater` 里写了 `JSONArray(manifest.second)` ——
+  `JSONArray` 没有「拷贝另一个 JSONArray」的构造器，那行每次都抛异常被吞掉。
+  改用 `manifest.second.toString()`，并把真实异常类名/消息带进状态文本。
+- **「检查更新一直显示已是最新」**：镜像列表里的 jsdelivr 对 `@main` 是**强缓存**，
+  实测一直返回 v1.0.9 的旧清单；而检查逻辑是「并发竞速、谁快用谁」，jsdelivr 最快所以每次都被它抢先命中。
+  移除 jsdelivr；竞速改为「宽限 1.5s 内取版本号最高者」；请求带时间戳；界面区分「检查失败」和「确实最新」。
+  **教训：可变清单不能走会强缓存的 CDN，速度不是唯一标准。**
+- **仓库长期是陈旧快照**：`sync.ps1` 报「0 变更 / NOTHING TO DO」但新文件根本没推上去。
+  重写为 `push.ps1`（按本地文件树逐个比对，缺失必推）。
+  ⚠️ 已知盲区：按**文件大小**比对，所以「改内容但字节数不变」会漏推
+  （`versionCode = 16` → `17` 就是这种）。**`update.json` 已加入排除列表** ——
+  它是发版产物，被 push 覆盖会让线上清单倒退回旧版本号（这个坑真踩过）。
