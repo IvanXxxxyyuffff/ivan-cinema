@@ -1,7 +1,7 @@
 {
-  "version": 2,
+  "version": 3,
   "updated": "2026-10-02",
-  "note": "新增「魔都资源」（实测有国产动漫分类、返回真实 vod_hits、直链 m3u8 可播）。原 20 源中 3 个（新浪/光速/华文等）无动漫分类，另有若干源 vod_hits 恒为 0 —— 未上榜条目在那些源上无法按播放量排序。",
+  "note": "本轮新增 6 个去重后的新后端：无忧资源(www.wyvod.com)、飘零资源(p2100.net)、艾旦资源(www.lovedan.net)、yhzy资源(api.apiyhzy.com)、豆瓣资源(dbzy.tv)、360资源(360zy.tv)。6 个源均实测存在国产动漫分类（ac=class 可解析且 class 名匹配 国产动漫/国漫/动漫）、ac=detail&t={国产动漫tid} 返回 ≥20 条、播放地址为直链 m3u8；其中 5 个返回真实 vod_hits（无忧 300/300、飘零 60/60、艾旦 60/60、yhzy 27/60、豆瓣 4/60），可用于未上榜条目按播放量排序；360资源 vod_hits 恒为 0（仅扩充分类覆盖，无法参与播放量排序）。已剔除：9 个 adult 标记源、与现有源同族换域名的镜像（wujinapi.*/ffzy*/lzizy*/tyyszy*/sdzyapi 子域/zuidazy/apibdzy 等）、与现有源分类表与目录 100% 相同的 yayazy*/niuniuzy*（与最大资源同后端）、与虎牙资源模板+目录 96% 相同的金鹰资源 jyzyapi.com，以及播放失败/无播放量的 zeqaht.com、ukuapi88.com。",
   "list": [
     {
       "name": "新浪资源",
@@ -86,6 +86,30 @@
     {
       "name": "魔都资源",
       "api": "https://www.mdzyapi.com/api.php/provide/vod/"
+    },
+    {
+      "name": "无忧资源",
+      "api": "https://www.wyvod.com/api.php/provide/vod/"
+    },
+    {
+      "name": "飘零资源",
+      "api": "https://p2100.net/api.php/provide/vod/"
+    },
+    {
+      "name": "艾旦资源",
+      "api": "https://www.lovedan.net/api.php/provide/vod/"
+    },
+    {
+      "name": "yhzy资源",
+      "api": "https://api.apiyhzy.com/api.php/provide/vod/"
+    },
+    {
+      "name": "豆瓣资源",
+      "api": "https://dbzy.tv/api.php/provide/vod/"
+    },
+    {
+      "name": "360资源",
+      "api": "https://360zy.tv/api.php/provide/vod/"
     }
   ]
 }
