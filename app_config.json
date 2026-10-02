@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "updated": "2026-10-03",
+  "note": "云端可下发策略。改这个文件即可调整下面这些行为，不需要发版（App 启动时节流 6 小时拉一次，失败用本地缓存，再失败用代码里的兜底默认值）。只放策略，不放代码。",
+  "maxAutoFailover": 5,
+  "enrichMinLines": 6,
+  "manualPickLock": true,
+  "pinned": ["逆天邪神", "大主宰"],
+  "preferHighestQuality": false,
+  "dohEnabled": true,
+  "disableSources": []
+}
