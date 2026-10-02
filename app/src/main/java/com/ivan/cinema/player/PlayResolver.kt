@@ -33,6 +33,20 @@ object PlayResolver {
     }
 
     /**
+     * 像 [cached]，但只在缓存里是**真地址**时才返回。
+     *
+     * 为什么不能直接用 [cached] 判断「备线能不能顶」：`resolve()` 解析不出时会把**原文**
+     * 也写进缓存（TTL 减半），所以死线路在缓存里同样 "cached() != null"。
+     * 两条线路都死时，A 认为 B 可用、B 认为 A 可用，就会来回切换成死循环（评审实测指出的 P0）。
+     */
+    fun cachedGenuine(input: String): String? {
+        val key = input.trim()
+        val v = cached(key) ?: return null
+        val playable = v.contains(".m3u8") || v.contains(".mp4")
+        return if (playable || v != key) v else null
+    }
+
+    /**
      * 后台预热：在详情页就把第一条线路第一集解析好。
      * 用户在详情页看简介、挑集数的那几秒正好把这一跳藏掉。
      */
