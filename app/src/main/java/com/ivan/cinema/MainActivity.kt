@@ -20,9 +20,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Home
-import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.Star
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
@@ -51,10 +51,13 @@ import com.ivan.cinema.ui.AmbientPosterBackdrop
 import com.ivan.cinema.ui.CategoryScreen
 import com.ivan.cinema.ui.DetailScreen
 import com.ivan.cinema.ui.DownloadScreen
+import com.ivan.cinema.ui.FavoritesScreen
 import com.ivan.cinema.ui.FilterScreen
+import com.ivan.cinema.ui.FollowScreen
 import com.ivan.cinema.ui.HomeScreen
 import com.ivan.cinema.ui.LoginScreen
 import com.ivan.cinema.ui.MiniPlayerBar
+import com.ivan.cinema.ui.MyScreen
 import com.ivan.cinema.ui.SearchScreen
 import com.ivan.cinema.ui.SettingsScreen
 import com.ivan.cinema.ui.components.LiquidNavBar
@@ -73,6 +76,12 @@ sealed class Page {
     data class Detail(val vod: MergedVod) : Page()
     data object Filter : Page()
     data object Login : Page()
+    /** 片单收藏（从「我的」推入）。 */
+    data object Favorites : Page()
+    /** 下载管理（从「我的」推入，不再占根页）。 */
+    data object Downloads : Page()
+    /** 设置（从「我的」推入，不再占根页）。 */
+    data object Settings : Page()
 }
 
 class MainActivity : ComponentActivity() {
@@ -109,8 +118,9 @@ class MainActivity : ComponentActivity() {
     private fun Root() {
         val scope = rememberCoroutineScope()
 
-        // 根页（底栏三个平级页）
-        var rootTab by remember { mutableStateOf(0) }   // 0 首页 / 1 下载 / 2 设置
+        // 根页（底栏三个平级页）。下载/设置不再占根位，改为从「我的」推入 ——
+        // 追剧是每天打开的理由，设置一个月才开一次，不该跟首页平起平坐。
+        var rootTab by remember { mutableStateOf(0) }   // 0 首页 / 1 追剧 / 2 我的
         // 推入栈（详情 / 分类）
         val stack = remember { mutableStateListOf<Page>() }
         val push = remember { Animatable(1f) }
@@ -250,6 +260,14 @@ class MainActivity : ComponentActivity() {
             startActivity(it)
         }
 
+        // 直接播本地下载文件（下载页在根页与推入页两处入口，避免两处各写一遍 Intent）
+        fun playDirect(url: String, title: String) {
+            val it = Intent(this, PlayerActivity::class.java)
+                .putExtra("directUrl", url)
+                .putExtra("name", title)
+            startActivity(it)
+        }
+
         fun download(detail: VodDetail, lineIndex: Int, episodeIndex: Int) {
             // lineIndex 是聚合列表下标，而 detail.lines 是该源内部的线路列表 —— 恒用 0，
             // 否则 selectedLine≥1 时 getOrNull 返回 null，下载静默失败
@@ -291,18 +309,17 @@ class MainActivity : ComponentActivity() {
                             onFilter = { pushPage(Page.Filter) },
                             contentBottomPadding = contentBottom
                         )
-                        1 -> DownloadScreen(
-                            onPlayLocal = { url, title ->
-                                val it = Intent(this@MainActivity, PlayerActivity::class.java)
-                                    .putExtra("directUrl", url)
-                                    .putExtra("name", title)
-                                startActivity(it)
-                            },
+                        1 -> FollowScreen(
+                            onOpenDetail = ::openDetail,
                             contentBottomPadding = contentBottom
                         )
-                        else -> SettingsScreen(
+                        else -> MyScreen(
                             contentBottomPadding = contentBottom,
-                            onLogin = { pushPage(Page.Login) }
+                            onLogin = { pushPage(Page.Login) },
+                            onOpenFavorites = { pushPage(Page.Favorites) },
+                            onOpenDownloads = { pushPage(Page.Downloads) },
+                            onOpenSettings = { pushPage(Page.Settings) },
+                            onOpenWatch = ::playFromWatch
                         )
                     }
                 }
@@ -377,6 +394,21 @@ class MainActivity : ComponentActivity() {
                                 onDone = { popPage() },
                                 onBack = { popPage() }
                             )
+                            is Page.Favorites -> FavoritesScreen(
+                                columns = columns,
+                                onOpenDetail = ::openDetail,
+                                onBack = { popPage() },
+                                // 推入页没有底栏，只留出导航条安全边距（原来根页要 168/196dp）
+                                contentBottomPadding = 32.dp
+                            )
+                            is Page.Downloads -> DownloadScreen(
+                                onPlayLocal = { url, title -> playDirect(url, title) },
+                                contentBottomPadding = 32.dp
+                            )
+                            is Page.Settings -> SettingsScreen(
+                                contentBottomPadding = 32.dp,
+                                onBack = { popPage() }
+                            )
                         }
                     }
                 }
@@ -407,8 +439,8 @@ class MainActivity : ComponentActivity() {
                         .fillMaxWidth(),
                     items = listOf(
                         NavItem("首页", Icons.Rounded.Home),
-                        NavItem("下载", Icons.Rounded.Download),
-                        NavItem("设置", Icons.Rounded.Settings),
+                        NavItem("追剧", Icons.Rounded.Star),
+                        NavItem("我的", Icons.Rounded.Person),
                     ),
                     selected = rootTab,
                     onSelect = { i ->
@@ -445,5 +477,8 @@ class MainActivity : ComponentActivity() {
         is Page.Detail -> "detail_${page.vod.key}"
         is Page.Filter -> "filter"
         is Page.Login -> "login"
+        is Page.Favorites -> "favorites"
+        is Page.Downloads -> "downloads"
+        is Page.Settings -> "settings"
     }
 }

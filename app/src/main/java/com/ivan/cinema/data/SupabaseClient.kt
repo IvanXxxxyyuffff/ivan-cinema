@@ -206,6 +206,51 @@ object SupabaseClient {
             }.getOrElse { emptyList() }
         }
 
+    // ─────────────────────── 错误上报（共享池） ───────────────────────
+
+    /**
+     * 上报一条错误：POST {URL}/rest/v1/error_report（PostgREST 插入，return=minimal）。
+     *
+     * [report] 由 [ErrorReporter] 组好；**表里没有任何身份列**，这里也绝不附加
+     * user_id / 用户名 / IP 等信息（隐私决定，见 docs/supabase.sql）。
+     * 与其它方法一致：失败一律包 Result，绝不抛给调用方。
+     */
+    suspend fun reportError(token: String, report: JSONObject): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val req = Request.Builder()
+                    .url("${base()}/rest/v1/error_report")
+                    .header("apikey", key())
+                    .header("Authorization", "Bearer $token")
+                    .header("Content-Type", "application/json")
+                    .header("Prefer", "return=minimal")
+                    .post(report.toString().toRequestBody(JSON))
+                    .build()
+                send(req)
+                Unit
+            }
+        }
+
+    /**
+     * 按保留策略清理旧错误：调用 RPC `prune_error_report`（见 docs/supabase.sql），
+     * 删除 [days] 天前的行。fire-and-forget 安全，失败静默。
+     */
+    suspend fun pruneErrors(token: String, days: Int): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val body = JSONObject().put("p_days", days).toString()
+                val req = Request.Builder()
+                    .url("${base()}/rest/v1/rpc/prune_error_report")
+                    .header("apikey", key())
+                    .header("Authorization", "Bearer $token")
+                    .header("Content-Type", "application/json")
+                    .post(body.toRequestBody(JSON))
+                    .build()
+                send(req)
+                Unit
+            }
+        }
+
     // ────────────────────────────── 内部 ──────────────────────────────
 
     /** 执行请求；非 2xx 抛出带可读信息的异常，成功返回响应体。 */

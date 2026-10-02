@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
@@ -39,8 +40,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.ivan.cinema.IVANApp
+import com.ivan.cinema.prefetch
 import com.ivan.cinema.data.Aggregator
 import com.ivan.cinema.data.ClassCache
 import com.ivan.cinema.data.HomeTab
@@ -53,6 +56,7 @@ import com.ivan.cinema.ui.components.StaggerIn
 import com.ivan.cinema.ui.theme.LocalIVAN
 import com.ivan.cinema.ui.theme.Radius
 import com.ivan.cinema.ui.theme.Space
+import kotlinx.coroutines.flow.collect
 
 /** 分类页：网格 + 分页（「找具体片」的效率场景）。 */
 @Composable
@@ -76,6 +80,16 @@ fun CategoryScreen(
     var page by remember(tab) { mutableStateOf(1) }
     var endReached by remember(tab) { mutableStateOf(false) }
     var reloadKey by remember(tab) { mutableStateOf(0) }
+    // 当前页的流是否仍在收集：驱动「还在加载更多源…」与分页守卫
+    var loadingMore by remember(tab) { mutableStateOf(false) }
+
+    // 源权重：sources 已按可信度排序（SourceHealth 内已折入 SharedHealth.isBad 降权），
+    // 越靠前权重越高 → categoryStream 先查先落位。纯本地换算，不发任何请求。
+    val sourceWeight: (String) -> Int = remember(sources) {
+        val rank = HashMap<String, Int>(sources.size)
+        sources.forEachIndexed { i, s -> rank[s.api] = sources.size - i }
+        fun(api: String): Int = rank[api] ?: 0
+    }
 
     LaunchedEffect(tab, reloadKey) {
         failed = false
@@ -98,10 +112,29 @@ fun CategoryScreen(
 
     LaunchedEffect(classMap, page) {
         if (classMap.isEmpty() || endReached) return@LaunchedEffect
-        val fresh = Aggregator.category(sources, classMap, page)
-        items = if (page == 1) fresh else items + fresh
+        if (page > 1 && items.isEmpty()) return@LaunchedEffect
+        // 分页基准：已上屏条目视为已存在，新批次只追加，绝不重排/丢项
+        val base = if (page == 1) emptyList() else items
+        val baseKeys = base.map { Aggregator.mergeKey(it.name, it.year) }.toHashSet()
+        var addedAny = false
+        loadingMore = true
+        runCatching {
+            Aggregator.categoryStream(sources, classMap, page, sourceWeight = sourceWeight)
+                .collect { batch ->
+                    // batch 是本页「已到齐的全集」（内部已去重、只增不改）。
+                    // 必须整体替换本页部分，不能只取「本批新增」——否则会丢掉前几批
+                    val pagePart = if (page == 1) batch
+                    else base + batch.filter { Aggregator.mergeKey(it.name, it.year) !in baseKeys }
+                    if (pagePart.size > base.size) {
+                        addedAny = true
+                        items = pagePart
+                        loading = false
+                    }
+                }
+        }.onFailure { failed = true }
+        loadingMore = false
         loading = false
-        if (fresh.isEmpty()) endReached = true
+        if (!addedAny) endReached = true
     }
 
     val gridState = rememberLazyGridState()
@@ -110,8 +143,18 @@ fun CategoryScreen(
         val last = info.visibleItemsInfo.lastOrNull()?.index ?: 0
         info.totalItemsCount > 0 && last >= info.totalItemsCount - 6
     }
-    LaunchedEffect(nearEnd) {
-        if (nearEnd && !loading && !endReached) page++
+    LaunchedEffect(nearEnd, loadingMore) {
+        // 必须等本页流收完再翻页，否则会中途取消仍在收集的流
+        if (nearEnd && !loading && !endReached && !loadingMore) page++
+    }
+    // 预热「即将进入视口」的封面：视口最后一项之后 9 张，上限由 prefetch 兜底
+    val lastVisible by remember {
+        derivedStateOf { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 }
+    }
+    LaunchedEffect(items.size, lastVisible) {
+        val start = lastVisible + 1
+        if (start >= items.size) return@LaunchedEffect
+        prefetch(ctx, items.drop(start).take(9).map { it.pic }.filter { it.isNotEmpty() })
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -192,6 +235,20 @@ fun CategoryScreen(
                     )
                     StaggerIn(index = index, identity = item.source.api + item.vodId) {
                         PosterCard(item = merged, onClick = { onOpenDetail(merged) })
+                    }
+                }
+                // 流仍在收集时给一条不挡内容的整行提示，让用户知道后面还会长出来
+                if (loadingMore) {
+                    item(span = { GridItemSpan(maxLineSpan) }, key = "loadingmore") {
+                        Text(
+                            "还在加载更多源…",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = pal.inkMuted,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = Space.md)
+                        )
                     }
                 }
             }

@@ -70,6 +70,26 @@ data class FollowEntry(
     val lastCheckedAt: Long
 )
 
+/**
+ * 片单收藏（想看）。
+ *
+ * 和 [FollowEntry] 同一口径：主键只有 [vodKey]，同一台设备上换账号时
+ * [userId] 决定「我的片单」读哪些行（一台设备两账号收藏同一部片会互相覆盖，
+ * 与追剧表相同的已知取舍）。[vodId] 供点开时重建播放地址。
+ */
+@Entity(tableName = "favorites")
+data class FavEntry(
+    @PrimaryKey val vodKey: String,
+    val userId: String = "",
+    val name: String,
+    val year: String,
+    val pic: String,
+    val sourceApi: String,
+    val sourceName: String,
+    val vodId: String,
+    val addedAt: Long
+)
+
 @Dao
 interface SearchDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -135,17 +155,42 @@ interface FollowDao {
     suspend fun updateEpisodeCount(vodKey: String, count: Int, checkedAt: Long)
 }
 
-@Database(entities = [WatchEntry::class, SearchEntry::class, FollowEntry::class], version = 5, exportSchema = false)
+@Dao
+interface FavDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(e: FavEntry)
+
+    @Query("DELETE FROM favorites WHERE vodKey = :vodKey")
+    suspend fun delete(vodKey: String)
+
+    /** 「我的片单」列表：按收藏时间倒序。 */
+    @Query("SELECT * FROM favorites WHERE userId = :userId ORDER BY addedAt DESC")
+    fun allFor(userId: String): Flow<List<FavEntry>>
+
+    @Query("SELECT * FROM favorites WHERE userId = :userId AND vodKey = :vodKey LIMIT 1")
+    suspend fun getFor(userId: String, vodKey: String): FavEntry?
+
+    /** 一次性快照（不走 Flow）。 */
+    @Query("SELECT * FROM favorites WHERE userId = :userId ORDER BY addedAt DESC")
+    suspend fun allOnce(userId: String): List<FavEntry>
+}
+
+@Database(
+    entities = [WatchEntry::class, SearchEntry::class, FollowEntry::class, FavEntry::class],
+    version = 6,
+    exportSchema = false
+)
 abstract class AppDb : RoomDatabase() {
     abstract fun watchDao(): WatchDao
     abstract fun searchDao(): SearchDao
     abstract fun followDao(): FollowDao
+    abstract fun favDao(): FavDao
 
     companion object {
         @Volatile private var inst: AppDb? = null
         fun get(ctx: Context): AppDb = inst ?: synchronized(this) {
             inst ?: Room.databaseBuilder(ctx, AppDb::class.java, "ivan.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                 .fallbackToDestructiveMigration()
                 .build()
                 .also { inst = it }
@@ -204,6 +249,23 @@ abstract class AppDb : RoomDatabase() {
                         "`sourceApi` TEXT NOT NULL, `sourceName` TEXT NOT NULL, " +
                         "`vodId` TEXT NOT NULL, `episodeCount` INTEGER NOT NULL, " +
                         "`followedAt` INTEGER NOT NULL, `lastCheckedAt` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`vodKey`))"
+                )
+            }
+        }
+
+        /**
+         * v5 → v6：新增片单收藏表。
+         * 纯新增，不动既有表 —— 观看记录 / 搜索历史 / 追剧订阅原样保留。
+         */
+        private val MIGRATION_5_6 = object : androidx.room.migration.Migration(5, 6) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `favorites` (" +
+                        "`vodKey` TEXT NOT NULL, `userId` TEXT NOT NULL, " +
+                        "`name` TEXT NOT NULL, `year` TEXT NOT NULL, `pic` TEXT NOT NULL, " +
+                        "`sourceApi` TEXT NOT NULL, `sourceName` TEXT NOT NULL, " +
+                        "`vodId` TEXT NOT NULL, `addedAt` INTEGER NOT NULL, " +
                         "PRIMARY KEY(`vodKey`))"
                 )
             }

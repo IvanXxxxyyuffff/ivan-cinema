@@ -85,6 +85,7 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import com.ivan.cinema.IVANApp
 import com.ivan.cinema.data.Account
+import com.ivan.cinema.data.ErrorReporter
 import com.ivan.cinema.data.MacCmsApi
 import com.ivan.cinema.data.SharedHealth
 import com.ivan.cinema.data.VodSource
@@ -228,9 +229,22 @@ class PlayerActivity : ComponentActivity() {
                 playbackError = baseMessage
                 return
             }
-            // 静默上报：能否自动换源都记一次；fire-and-forget，绝不阻塞播放、绝不弹提示
+            // 静默上报：能否自动换源都记一次；fire-and-forget，绝不阻塞播放、绝不弹提示。
+            // 两路都发：SharedHealth 走自增计数（供排序降权），ErrorReporter 留一条带上下文的记录
+            // （片名 + 源 + 版本 + 机型），20 个用户共享同一个池子，用来分辨是源的问题还是版本/机型的问题。
             val failedApi = currentSourceApi
             scope.launch { runCatching { SharedHealth.reportPlayFailure(context, failedApi, vodKey) } }
+            scope.launch {
+                runCatching {
+                    ErrorReporter.report(
+                        context,
+                        kind = "play_fail",
+                        sourceApi = failedApi,
+                        vodKey = vodKey,
+                        message = "$name · $baseMessage"
+                    )
+                }
+            }
 
             // 只有一条线路时无从换起 —— 保持原有错误浮层
             if (lines.size < 2) {

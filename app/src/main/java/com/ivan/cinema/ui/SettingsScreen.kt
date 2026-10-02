@@ -1,8 +1,5 @@
 package com.ivan.cinema.ui
 
-import android.Manifest
-import android.content.pm.PackageManager
-import android.os.Build
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -23,18 +20,17 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.ArrowBack
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,22 +41,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.app.NotificationManagerCompat
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.ivan.cinema.BuildConfig
 import com.ivan.cinema.IVANApp
-import com.ivan.cinema.data.Account
 import com.ivan.cinema.data.ApkState
 import com.ivan.cinema.data.ApkUpdater
-import com.ivan.cinema.data.FollowStore
-import com.ivan.cinema.data.SupabaseConfig
 import com.ivan.cinema.data.UpdateChecker
 import com.ivan.cinema.data.UpdateInfo
 import com.ivan.cinema.ui.components.LiquidCard
@@ -74,43 +63,36 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
 
+/**
+ * 设置页 —— 只留「一个月才开一次」的开关：检查更新 / 减少动效 / 封面缓存 / 搜索历史 / 版本。
+ *
+ * 身份位与「我的追剧」已迁出：前者是每天可见的「我的」，后者是每天打开的理由「追剧」，
+ * 都不该埋在这一层。本页现在是从「我的」推入的**二级页**，所以自带返回按钮。
+ */
 @Composable
-fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
+fun SettingsScreen(contentBottomPadding: Dp = 0.dp, onBack: () -> Unit = {}) {
     val pal = LocalIVAN.current
     val scope = rememberCoroutineScope()
     val ctx = IVANApp.ctx()
-    val account = Account.state.value
     val update = UpdateChecker.latest.value
 
     var reduce by remember { mutableStateOf(MotionPrefs.reduce) }
     var cacheCleared by remember { mutableStateOf(false) }
     var historyCleared by remember { mutableStateOf(false) }
-    var showLogout by remember { mutableStateOf(false) }
-    // 退出登录会清掉登录态，二次确认
-    var confirmLogout by remember { mutableStateOf(false) }
     // 检查更新是异步无回调的：这里承接「已是最新 / 检查失败」的瞬时反馈
     var updateNote by remember { mutableStateOf<String?>(null) }
     var installArmed by remember { mutableStateOf(false) }
     val apkState = ApkUpdater.state.value
-    // 我的追剧：按当前账号订阅（换账号要重订，否则读到上一个账号的行）
-    val follows by remember(account?.username) { FollowStore.allFor(ctx) }
-        .collectAsState(initial = emptyList())
-    // 通知权限/渠道状态：决定追剧卡片是「更新后通知你」还是「不会提醒」
-    var notifAllowed by remember { mutableStateOf(followNotifAllowed(ctx)) }
 
     // 从「安装未知来源应用」设置页返回后自动继续安装（只自动触发一次）
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                // 用户可能刚从系统设置里改了通知权限，回来要立刻反映到追剧卡片
-                notifAllowed = followNotifAllowed(ctx)
-                if (installArmed) {
-                    installArmed = false
-                    val s = ApkUpdater.state.value
-                    if (s is ApkState.Ready && ApkUpdater.canInstall(ctx)) {
-                        ApkUpdater.install(ctx, s.file)
-                    }
+            if (event == Lifecycle.Event.ON_RESUME && installArmed) {
+                installArmed = false
+                val s = ApkUpdater.state.value
+                if (s is ApkState.Ready && ApkUpdater.canInstall(ctx)) {
+                    ApkUpdater.install(ctx, s.file)
                 }
             }
         }
@@ -125,124 +107,36 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
         verticalArrangement = Arrangement.spacedBy(Space.md),
         modifier = Modifier.fillMaxSize().statusBarsPadding()
     ) {
+        // ── 标题 + 返回（二级页必须有可见返回入口，和详情页同款胶囊）──
         item {
-            Text(
-                "设置",
-                style = MaterialTheme.typography.headlineSmall,
-                color = pal.ink,
-                modifier = Modifier.padding(vertical = Space.md)
-            )
-        }
-
-        // ── 身份位（头像 + 用户名 + SVIP 徽标）──
-        item {
-            LiquidCard(Modifier.fillMaxWidth(), radius = Radius.lg) {
-                Column(Modifier.padding(Space.md + 2.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            Modifier
-                                .size(52.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    if (account != null) pal.accent.copy(alpha = 0.22f)
-                                    else Color.White.copy(alpha = 0.08f)
-                                ),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                account?.username?.take(1)?.uppercase() ?: "?",
-                                fontSize = 20.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = if (account != null) pal.accent else pal.inkMuted
-                            )
-                        }
-                        Spacer(Modifier.width(Space.md))
-                        Column(Modifier.weight(1f)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    account?.username ?: "未登录",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = pal.ink
-                                )
-                                if (account?.isSvip == true) {
-                                    Spacer(Modifier.width(Space.sm))
-                                    SvipBadge()
-                                }
-                            }
-                            Spacer(Modifier.height(2.dp))
-                            Text(
-                                if (account == null) {
-                                    // 只有真正配置了 Supabase 才承诺同步，否则只是本机身份位
-                                    if (SupabaseConfig.isConfigured()) "登录后可同步观看记录"
-                                    else "登录后可显示身份位与会员标识"
-                                } else if (account.isSvip) "会员身份 · 本机有效" else "普通用户",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = pal.inkMutedOnGlass
-                            )
-                        }
-                        val action = remember { MutableInteractionSource() }
-                        Text(
-                            if (account == null) "登录 / 注册" else "账号",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = if (account == null) pal.accentInk else pal.ink,
-                            modifier = Modifier
-                                .pressDip(action, to = 0.94f)
-                                .clip(RoundedCornerShape(Radius.pill))
-                            .background(
-                                if (account == null) pal.accent else Color.Transparent
-                            )
-                            .then(
-                                if (account == null) Modifier
-                                else Modifier.border(
-                                    1.dp, pal.hairline, RoundedCornerShape(Radius.pill)
-                                )
-                            )
-                                .clickable(interactionSource = action, indication = null) {
-                                    if (account == null) onLogin() else showLogout = !showLogout
-                                }
-                                .pillHit()
-                                .padding(horizontal = 20.dp)
-                        )
-                    }
-                    if (account != null && showLogout) {
-                        Spacer(Modifier.height(Space.md))
-                        Row(horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
-                            val svipAction = remember { MutableInteractionSource() }
-                            Text(
-                                if (account.isSvip) "取消 SVIP" else "开启 SVIP",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = pal.ink,
-                                modifier = Modifier
-                                    .pressDip(svipAction, to = 0.94f)
-                                    .clip(RoundedCornerShape(Radius.pill))
-                                    .background(Color.Transparent)
-                                .border(1.dp, pal.hairline, RoundedCornerShape(Radius.pill))
-                                    .clickable(interactionSource = svipAction, indication = null) {
-                                        Account.setSvip(ctx, !account.isSvip)
-                                    }
-                                    .pillHit()
-                                    .padding(horizontal = 20.dp)
-                            )
-                            val logoutAction = remember { MutableInteractionSource() }
-                            Text(
-                                "退出登录",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = pal.dangerOnGlass,
-                                modifier = Modifier
-                                    .pressDip(logoutAction, to = 0.94f)
-                                    .clip(RoundedCornerShape(Radius.pill))
-                                    .background(Color.Transparent)
-                                .border(1.dp, pal.hairline, RoundedCornerShape(Radius.pill))
-                                    .clickable(interactionSource = logoutAction, indication = null) {
-                                        // 退出会清登录态，先确认
-                                        confirmLogout = true
-                                    }
-                                    .pillHit()
-                                    .padding(horizontal = 20.dp)
-                            )
-                        }
-                    }
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = Space.md),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    Modifier
+                        .size(48.dp)
+                        .clip(RoundedCornerShape(Radius.pill))
+                        .background(Color.Black.copy(alpha = 0.55f))
+                        .border(1.dp, Color.White.copy(alpha = 0.22f), RoundedCornerShape(Radius.pill))
+                        .clickable { onBack() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Rounded.ArrowBack,
+                        contentDescription = "返回",
+                        tint = Color.White,
+                        modifier = Modifier.size(22.dp)
+                    )
                 }
+                Spacer(Modifier.width(Space.md))
+                Text(
+                    "设置",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = pal.ink
+                )
             }
         }
 
@@ -472,77 +366,6 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
             }
         }
 
-        // ── 我的追剧（MacCMS 无推送，只能每天轮询 —— 文案必须说清节奏）──
-        item {
-            LiquidCard(Modifier.fillMaxWidth(), radius = Radius.lg) {
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(Space.md + 2.dp)
-                ) {
-                    Text("我的追剧", style = MaterialTheme.typography.titleMedium, color = pal.ink)
-                    Spacer(Modifier.height(Space.xs))
-                    if (follows.isEmpty()) {
-                        Text(
-                            "还没有追的剧。在详情页点「追剧」，更新了会通知你",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = pal.inkMutedOnGlass
-                        )
-                    } else {
-                        Text(
-                            if (notifAllowed) "每天检查一次更新，更新后通知你"
-                            else "每天检查一次更新；通知权限未开启，更新不会提醒",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (notifAllowed) pal.inkMutedOnGlass else pal.dangerOnGlass
-                        )
-                        Spacer(Modifier.height(Space.md))
-                        follows.forEach { f ->
-                            Row(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = Space.xs),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(Modifier.weight(1f)) {
-                                    Text(
-                                        f.name,
-                                        style = MaterialTheme.typography.bodyLarge,
-                                        color = pal.ink,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Text(
-                                        if (f.episodeCount > 0) "已更新到第 ${f.episodeCount} 集"
-                                        else "等待更新",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = pal.inkMutedOnGlass
-                                    )
-                                }
-                                val unwatch = remember { MutableInteractionSource() }
-                                Text(
-                                    "取消",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = pal.ink,
-                                    modifier = Modifier
-                                        .pressDip(unwatch, to = 0.94f)
-                                        .clip(RoundedCornerShape(Radius.pill))
-                                        .background(Color.Transparent)
-                                        .border(1.dp, pal.hairline, RoundedCornerShape(Radius.pill))
-                                        .clickable(interactionSource = unwatch, indication = null) {
-                                            scope.launch(Dispatchers.IO) {
-                                                FollowStore.unfollow(ctx, f.vodKey)
-                                            }
-                                        }
-                                        .pillHit()
-                                        .padding(horizontal = 20.dp)
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         item {
             Text(
                 "IVAN CINEMA · 自用版\n数据来自公开采集接口，仅本机使用",
@@ -553,56 +376,11 @@ fun SettingsScreen(contentBottomPadding: Dp, onLogin: () -> Unit = {}) {
             )
         }
     }
-
-    if (confirmLogout) {
-        AlertDialog(
-            onDismissRequest = { confirmLogout = false },
-            title = { Text("退出登录", color = pal.ink) },
-            text = {
-                Text(
-                    "退出后需要重新登录才能恢复身份位与同步，确定退出？",
-                    color = pal.inkMutedOnGlass
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        Account.logout(ctx)
-                        showLogout = false
-                        confirmLogout = false
-                    },
-                    modifier = Modifier.heightIn(min = 48.dp)
-                ) {
-                    Text("退出", color = pal.dangerOnGlass)
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = { confirmLogout = false },
-                    modifier = Modifier.heightIn(min = 48.dp)
-                ) {
-                    Text("取消", color = pal.inkMutedOnGlass)
-                }
-            },
-            containerColor = pal.surfaceRaised,
-            titleContentColor = pal.ink,
-            textContentColor = pal.inkMutedOnGlass
-        )
-    }
 }
 
 /** 胶囊按钮统一 48dp 命中区，文字在最小高度内垂直居中。 */
 private fun Modifier.pillHit(): Modifier =
     this.heightIn(min = 48.dp).wrapContentHeight(Alignment.CenterVertically)
-
-/** 追剧通知是否真能到达：13+ 看运行时权限，低版本看渠道总开关。 */
-private fun followNotifAllowed(ctx: android.content.Context): Boolean = runCatching {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-        ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) !=
-        PackageManager.PERMISSION_GRANTED
-    ) false
-    else NotificationManagerCompat.from(ctx).areNotificationsEnabled()
-}.getOrDefault(true)
 
 /** 是否有可用网络：区分「已是最新」和「检查失败」的唯一本地依据。 */
 private fun hasNetwork(ctx: android.content.Context): Boolean = runCatching {

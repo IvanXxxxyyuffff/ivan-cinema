@@ -1,5 +1,11 @@
 package com.ivan.cinema.ui
 
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -22,6 +28,7 @@ import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -76,6 +83,34 @@ fun PosterCard(
                     contentDescription = item.name,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize(),
+                    // loading 槽：让占位"呼吸"起来（0.45→0.9 透明度循环），
+                    // 一眼就能读出"正在加载"，而不是一块说不清的灰盒子；
+                    // 失败仍退到可见的 FilmTile，两者不会混淆。
+                    loading = {
+                        val breathe = rememberInfiniteTransition(label = "posterLoading")
+                        val a by breathe.animateFloat(
+                            initialValue = 0.45f,
+                            targetValue = 0.9f,
+                            animationSpec = infiniteRepeatable(
+                                animation = tween(durationMillis = 900, easing = LinearEasing),
+                                repeatMode = RepeatMode.Reverse
+                            ),
+                            label = "posterLoadingAlpha"
+                        )
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .graphicsLayer { alpha = a }
+                                .background(
+                                    Brush.verticalGradient(
+                                        listOf(
+                                            pal.surfaceRaised,
+                                            pal.surfaceRaised.copy(alpha = 0.68f)
+                                        )
+                                    )
+                                )
+                        )
+                    },
                     error = { FilmTile(Modifier.fillMaxSize()) }
                 )
             } else {

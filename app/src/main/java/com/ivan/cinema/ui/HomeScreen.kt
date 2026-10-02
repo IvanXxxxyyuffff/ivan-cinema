@@ -22,15 +22,19 @@ import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,9 +48,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
 import coil.compose.SubcomposeAsyncImage
 import com.ivan.cinema.IVANApp
+import com.ivan.cinema.prefetch
 import com.ivan.cinema.data.Aggregator
 import com.ivan.cinema.data.ClassCache
 import com.ivan.cinema.data.HomeTab
@@ -98,6 +102,16 @@ fun HomeScreen(
     var items by remember { mutableStateOf<List<VodItem>?>(null) }
     var page by remember { mutableStateOf(1) }
     var endReached by remember { mutableStateOf(false) }
+    // 当前页的流是否仍在收集：用于「还在加载更多源…」提示与分页守卫
+    var loadingMore by remember { mutableStateOf(false) }
+
+    // 源权重：sources 已由 SourceHealth 按可信度排好序（内部已折入 SharedHealth.isBad 降权），
+    // 越靠前权重越高 → categoryStream 先查先落位。这里不发任何网络请求，纯本地换算。
+    val sourceWeight: (String) -> Int = remember(sources) {
+        val rank = HashMap<String, Int>(sources.size)
+        sources.forEachIndexed { i, s -> rank[s.api] = sources.size - i }
+        fun(api: String): Int = rank[api] ?: 0
+    }
 
     LaunchedEffect(tab) {
         items = null
@@ -107,20 +121,55 @@ fun HomeScreen(
 
     LaunchedEffect(tab, page) {
         if (endReached && page > 1) return@LaunchedEffect
+        // 切 tab 时重置 effect 与加载 effect 同帧竞争：旧 page 先跑会拿到 items=null，
+        // 直接跳过，避免把第 N 页当成首页闪一下
+        if (page > 1 && items == null) return@LaunchedEffect
         val cached = ClassCache.read(ctx, tab.name)
         val map = if (cached.isNotEmpty()) cached else {
-            val r = Aggregator.resolveClassMap(sources, tab)
-            ClassCache.write(ctx, tab.name, r.tidMap)
-            r.tidMap
+            val r = runCatching { Aggregator.resolveClassMap(sources, tab) }.getOrNull()
+            if (r != null) ClassCache.write(ctx, tab.name, r.tidMap)
+            r?.tidMap.orEmpty()
         }
         if (map.isEmpty()) {
-            items = emptyList()
+            // 分类表拿不到：首屏落到空态并停止翻页（原实现会永久停在骨架屏）
+            if (page == 1) items = emptyList()
+            endReached = true
             return@LaunchedEffect
         }
-        val fresh = Aggregator.category(sources, map, page, maxSources = 8, by = "time")
-        items = if (page == 1) fresh else (items ?: emptyList()) + fresh
-        if (fresh.isEmpty()) endReached = true
-        fresh.firstOrNull { it.pic.isNotEmpty() }?.pic?.let(onAmbient)
+        // 分页基准：本页之前的条目视为已存在，新批次只做追加，绝不重排/丢项
+        val base = if (page == 1) emptyList() else (items ?: emptyList())
+        val baseKeys = base.map { Aggregator.mergeKey(it.name, it.year) }.toHashSet()
+        var addedAny = false
+        var ambientSent = false
+        loadingMore = true
+        runCatching {
+            Aggregator.categoryStream(
+                sources, map, page,
+                maxSources = 8,
+                by = "time",
+                sourceWeight = sourceWeight
+            ).collect { batch ->
+                // batch 是本页「已到齐的全集」（内部已按 mergeKey 去重、只增不改）。
+                // 相对分页基准去重后整体作为本页部分，保证整屏从头到尾追加式增长 ——
+                // 不能只取「本批新增」，否则第二次发值会把前几批已上屏的条目丢掉
+                val pagePart = if (page == 1) batch
+                else base + batch.filter { Aggregator.mergeKey(it.name, it.year) !in baseKeys }
+                if (pagePart.size > base.size) {
+                    addedAny = true
+                    items = pagePart
+                }
+                if (!ambientSent) {
+                    batch.firstOrNull { it.pic.isNotEmpty() }?.pic?.let(onAmbient)
+                    ambientSent = true
+                }
+            }
+        }
+        loadingMore = false
+        // 本页没有任何新增（全被去重 / 各源都没数据）→ 到底；首屏此时应落到空态
+        if (!addedAny) {
+            if (page == 1 && items == null) items = emptyList()
+            endReached = true
+        }
     }
 
     val list = items
@@ -129,7 +178,26 @@ fun HomeScreen(
     // 又在首项没有封面时把第 2 条同时当作 banner 和卡片。改成按 key 排除 banner。
     val gridItems = list?.filter { it !== banner } ?: emptyList()
 
+    val listState = rememberLazyListState()
+    // 预热「即将进入视口」的封面：找出视口内最后一条网格行，预热其后 9 条。
+    // 网格行的 key 是 "grid:<rowIndex>"，所以能直接解析出行号；行号在追加式列表里恒定。
+    val lastGridRow by remember {
+        derivedStateOf {
+            listState.layoutInfo.visibleItemsInfo
+                .mapNotNull { (it.key as? String)?.takeIf { k -> k.startsWith("grid:") } }
+                .mapNotNull { it.removePrefix("grid:").toIntOrNull() }
+                .maxOrNull() ?: -1
+        }
+    }
+    LaunchedEffect(list?.size, lastGridRow) {
+        val l = list ?: return@LaunchedEffect
+        val start = (lastGridRow + 1) * columns
+        if (start >= gridItems.size) return@LaunchedEffect
+        prefetch(ctx, gridItems.drop(start).take(9).map { it.pic }.filter { it.isNotEmpty() })
+    }
+
     LazyColumn(
+        state = listState,
         contentPadding = PaddingValues(bottom = contentBottomPadding),
         modifier = Modifier.fillMaxSize()
     ) {
@@ -234,13 +302,16 @@ fun HomeScreen(
                         .clip(RoundedCornerShape(Radius.lg))
                         .clickable { onOpenDetail(merged) }
                 ) {
-                    AsyncImage(
+                    SubcomposeAsyncImage(
                         model = banner.pic,
                         contentDescription = banner.name,
                         contentScale = ContentScale.Crop,
                         // 2:3 竖版海报裁成 16:9 时，从顶部取才拿得到标题美术字
                         alignment = Alignment.TopCenter,
-                        modifier = Modifier.fillMaxSize()
+                        modifier = Modifier.fillMaxSize(),
+                        // 加载中给带转圈的占位，失败退到 FilmTile —— 二者与「空白」都不同
+                        loading = { LoadingPoster(Modifier.fillMaxSize(), spinner = true) },
+                        error = { FilmTile(Modifier.fillMaxSize()) }
                     )
                     Box(
                         Modifier
@@ -363,12 +434,13 @@ fun HomeScreen(
         } else if (list.isEmpty()) {
             item(key = "empty") { EmptyState("该分类暂时没有内容") }
         } else {
-            items(
+            itemsIndexed(
                 // 用传入的 columns（手机 3 / 平板 6）。原来是硬编码 chunked(2)，
                 // 于是首页只有两列巨卡，跟分类/搜索/筛选页的密度完全不一致
                 gridItems.chunked(columns),
-                key = { row -> row.joinToString("|") { it.source.api + it.vodId } }
-            ) { rowItems ->
+                // key 用行号：追加式列表里行号恒定，且便于预热逻辑解析「最后可见行」
+                key = { rowIndex, _ -> "grid:$rowIndex" }
+            ) { rowIndex, rowItems ->
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -386,7 +458,21 @@ fun HomeScreen(
                     repeat(columns - rowItems.size) { Spacer(Modifier.weight(1f)) }
                 }
             }
-            if (!endReached) {
+            // 流仍在收集时给一条不挡内容的提示，让用户知道后面还会长出来
+            if (loadingMore && !endReached) {
+                item(key = "loadingmore") {
+                    Text(
+                        "还在加载更多源…",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = pal.inkMuted,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = Space.md)
+                    )
+                }
+            }
+            // 分页触发：必须等本页流收完（!loadingMore）再翻下一页，避免流被中途取消
+            if (!endReached && !loadingMore) {
                 item(key = "loadmore") {
                     LaunchedEffect(Unit) { page++ }
                     Box(Modifier.fillMaxWidth().height(1.dp))
@@ -406,6 +492,32 @@ private fun VodItem.toMerged(): MergedVod = MergedVod(
     pic = pic,
     hits = mutableListOf(SourceHit(source, vodId, remarks))
 )
+
+/**
+ * 封面「正在加载」占位：与 FilmTile（失败占位）刻意做出区分 ——
+ * 加载中是渐变的空面（可选转圈），失败是带影片图形的实心砖。
+ * 否则用户看到一块灰，分不清是在加载还是图挂了。
+ */
+@Composable
+private fun LoadingPoster(modifier: Modifier = Modifier, spinner: Boolean = false) {
+    val pal = LocalIVAN.current
+    Box(
+        modifier.background(
+            Brush.verticalGradient(
+                listOf(pal.surfaceRaised, pal.surfaceRaised.copy(alpha = 0.68f))
+            )
+        ),
+        contentAlignment = Alignment.Center
+    ) {
+        if (spinner) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(22.dp),
+                color = pal.inkMuted,
+                strokeWidth = 2.dp
+            )
+        }
+    }
+}
 
 /** 腾讯视频式大卡：竖版封面 + 左上角标 + 封面底部更新信息 + 片名 + 一句话。 */
 @Composable
@@ -514,11 +626,14 @@ fun WatchRow(entries: List<WatchEntry>, onOpen: (WatchEntry) -> Unit) {
                             .clip(RoundedCornerShape(Radius.md))
                             .background(pal.surfaceRaised)
                     ) {
-                        AsyncImage(
+                        SubcomposeAsyncImage(
                             model = e.pic,
                             contentDescription = e.name,
                             contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize()
+                            modifier = Modifier.fillMaxSize(),
+                            // 加载中走渐变占位，失败退到 FilmTile，不再是「和空白一样」的灰块
+                            loading = { LoadingPoster(Modifier.fillMaxSize()) },
+                            error = { FilmTile(Modifier.fillMaxSize()) }
                         )
                         ThinProgress(
                             fraction = { if (e.durationMs > 0) e.positionMs.toFloat() / e.durationMs else 0f },

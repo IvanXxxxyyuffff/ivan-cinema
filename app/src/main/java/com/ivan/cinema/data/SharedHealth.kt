@@ -79,6 +79,22 @@ object SharedHealth {
     fun isBad(stat: SourceStat?): Boolean =
         stat != null && stat.total >= MIN_SAMPLES && stat.successRate < BAD_RATE
 
+    /**
+     * 给播放层用：把候选线路按「先试哪个」排好序，best-first。
+     *
+     * 规则（产品要求）：**只降权、绝不隐藏** —— 传进来的每个 api 都恰好返回一次，
+     * 不新增、不丢弃、不去重。共享健康里被判定为坏源（[isBad]）的排到后面，
+     * 其余保持原有相对顺序（Kotlin [sortedBy] 是稳定排序，所以「未知源」的相对
+     * 次序与传入时完全一致）。未登录 / 无网络时 [fetch] 返回空表，等价于原样返回。
+     *
+     * 例：rankLines(ctx, [A, B, C])，若共享池判定 B 是坏源 → [A, C, B]。
+     */
+    suspend fun rankLines(ctx: Context, apis: List<String>): List<String> {
+        if (apis.size <= 1) return apis
+        val stats = fetch(ctx)
+        return apis.sortedBy { if (isBad(stats[it])) 1 else 0 }
+    }
+
     /** 当前会话的 access token；未配置 Supabase 或未登录时返回 null。 */
     private fun tokenOrNull(): String? {
         if (!SupabaseConfig.isConfigured()) return null

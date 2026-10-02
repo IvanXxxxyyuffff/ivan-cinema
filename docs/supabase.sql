@@ -130,3 +130,59 @@ revoke execute on function public.report_source_health(text[], text[]) from publ
 revoke execute on function public.bump_play_failure(text, text) from public, anon;
 grant execute on function public.report_source_health(text[], text[]) to authenticated;
 grant execute on function public.bump_play_failure(text, text) to authenticated;
+
+
+-- ============================================================
+-- IVAN CINEMA · 错误上报（共享池，保留 30 天）
+-- 对应 APP 端 data/ErrorReporter.kt + SupabaseClient.reportError / pruneErrors。
+--
+-- 隐私（刻意为之）：本表**没有任何身份列** —— 不记 user_id、不记用户名、
+-- 不记 IP、不记精确位置。只存「错误类型 + 源 + 版本 + 机型」这类去标识化的
+-- 运行信息，20 个用户共同排障用。插入 / 读取对所有登录用户开放（共享池设计）。
+-- ============================================================
+
+create table if not exists public.error_report (
+    id              bigserial primary key,
+    kind            text   not null,
+    source_api      text   not null default '',
+    vod_key         text   not null default '',
+    message         text   not null default '',
+    stack           text   not null default '',
+    app_version     text   not null default '',
+    android_version text   not null default '',
+    device_model    text   not null default '',
+    created_at      bigint not null
+);
+
+-- 行级安全：共享表，登录用户可插入 / 读取，未登录一律拒绝
+alter table public.error_report enable row level security;
+
+drop policy if exists "error_report_select_shared" on public.error_report;
+create policy "error_report_select_shared" on public.error_report
+    for select using (auth.uid() is not null);
+
+drop policy if exists "error_report_insert_shared" on public.error_report;
+create policy "error_report_insert_shared" on public.error_report
+    for insert with check (auth.uid() is not null);
+
+-- 清理用索引：prune 按 created_at 删，建索引避免全表扫
+create index if not exists error_report_created_at_idx on public.error_report (created_at);
+
+-- 保留策略：删除超过 p_days 天的错误行（APP 端固定传 30）。
+-- 表上刻意**没有** DELETE 策略（RLS 只开放 insert / select），所以这里必须用
+-- security definer：以函数属主（postgres，即表属主）身份删除，绕过 RLS；
+-- 同时 set search_path 防止函数被搜索路径劫持。对应 SupabaseClient.pruneErrors。
+create or replace function public.prune_error_report(p_days integer)
+returns void
+language sql
+security definer
+set search_path = public
+as $$
+    delete from public.error_report
+    where created_at < (extract(epoch from clock_timestamp()) * 1000)::bigint
+                      - (greatest(coalesce(p_days, 30), 1)::bigint * 86400000);
+$$;
+
+-- 只允许登录用户调用（表本身也已被 RLS 挡住匿名访问）
+revoke execute on function public.prune_error_report(integer) from public, anon;
+grant execute on function public.prune_error_report(integer) to authenticated;

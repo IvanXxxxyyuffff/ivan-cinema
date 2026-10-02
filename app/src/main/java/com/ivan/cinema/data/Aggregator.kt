@@ -144,13 +144,12 @@ object Aggregator {
         area: String? = null,
         cls: String? = null,
         year: String? = null,
-        lang: String? = null
+        lang: String? = null,
+        sourceWeight: ((String) -> Int)? = null
     ): List<VodItem> =
         coroutineScope {
             val sem = Semaphore(10)
-            sources
-                .filter { tidBySource.containsKey(it.api) }
-                .take(maxSources)
+            orderedSources(sources, tidBySource, maxSources, sourceWeight)
                 .map { src ->
                     async(Dispatchers.IO) {
                         val tid = tidBySource[src.api] ?: return@async emptyList<VodItem>()
@@ -159,6 +158,88 @@ object Aggregator {
                 }.awaitAll().flatten()
                 .distinctBy { mergeKey(it.name, it.year) }
         }
+
+    /**
+     * 分类源排序规则（TASK 2 共享健康降权）：
+     *   - [sourceWeight] 为 null（默认）时**完全保持调用方传入的源顺序**，
+     *     与旧 [category] 行为逐字节一致，不做任何重排；
+     *   - 非 null 时按权重**降序**稳定排序（权重高 = 更健康 = 先发先落位），
+     *     同权重保持原始顺序（sortedByDescending 是稳定排序）。
+     *   - **只降权、不隐藏**：坏源照样参与查询、结果照样展示，只是排在后面。
+     *     任何源都不会因为权重低而被丢弃，[maxSources] 仍是唯一的裁剪依据。
+     */
+    private fun orderedSources(
+        sources: List<VodSource>,
+        tidBySource: Map<String, String>,
+        maxSources: Int,
+        sourceWeight: ((String) -> Int)?
+    ): List<VodSource> {
+        val candidates = sources.filter { tidBySource.containsKey(it.api) }
+        return if (sourceWeight == null) {
+            candidates.take(maxSources)
+        } else {
+            candidates.sortedByDescending { sourceWeight(it.api) }.take(maxSources)
+        }
+    }
+
+    /**
+     * 流式分类：**每完成一个源就追加一批**，首屏约 1s 出图，不再被最慢的源卡住。
+     *
+     * 契约（其他调用方依赖，勿改）：
+     *   ① **追加式、绝不重排**：已发出的条目位置永不改变，后到的源只在末尾追加，
+     *      避免用户手指下的网格发生跳动（这是刻意的产品决定）；
+     *   ② 跨源按 [mergeKey] 去重，且与**已发出的条目**再去重一次；
+     *   ③ 每个源独立 [runCatching]，单源失败/超时只跳过该源，绝不取消整个 Flow；
+     *   ④ 并发用 [Semaphore] 限制，与 [searchAll] 同一套模式；
+     *   ⑤ [sourceWeight] 只影响**启动顺序与落位先后**（权重高者先查先落），
+     *      null 时保持调用方原始源顺序；任何源都不会被丢弃。
+     *
+     * 没有源命中时不会发出任何值（调用方应把「从未收到值」当作空结果处理）。
+     */
+    fun categoryStream(
+        sources: List<VodSource>,
+        tidMap: Map<String, String>,
+        page: Int,
+        maxSources: Int = 8,
+        by: String? = null,
+        area: String? = null,
+        cls: String? = null,
+        year: String? = null,
+        lang: String? = null,
+        sourceWeight: ((String) -> Int)? = null
+    ): Flow<List<VodItem>> = channelFlow {
+        val ordered = orderedSources(sources, tidMap, maxSources, sourceWeight)
+        val seen = HashSet<String>()
+        val out = ArrayList<VodItem>()
+        val mutex = Mutex()
+        val sem = Semaphore(10)
+        coroutineScope {
+            val jobs = ordered.map { src ->
+                async(Dispatchers.IO) {
+                    sem.withPermit {
+                        val tid = tidMap[src.api] ?: return@withPermit
+                        // 单源失败/超时只跳过，绝不冒泡取消整个 Flow
+                        val items = runCatching {
+                            MacCmsApi(src).list(tid, page, by, area, cls, year, lang)
+                        }.getOrNull() ?: return@withPermit
+                        if (items.isEmpty()) return@withPermit
+                        mutex.withLock {
+                            var added = false
+                            for (it in items) {
+                                if (seen.add(mergeKey(it.name, it.year))) {
+                                    out.add(it)
+                                    added = true
+                                }
+                            }
+                            if (added) trySend(out.toList())
+                        }
+                    }
+                }
+            }
+            jobs.awaitAll()
+        }
+        close()
+    }
 
     /** 每源 class 探测结果：tid 映射 + 每源成功明细（供失败态展示） */
     data class ClassResolve(

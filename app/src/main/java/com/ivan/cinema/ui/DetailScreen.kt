@@ -61,12 +61,14 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import coil.compose.AsyncImage
+import coil.compose.SubcomposeAsyncImage
 import com.ivan.cinema.IVANApp
 import com.ivan.cinema.data.Aggregator
+import com.ivan.cinema.data.FavStore
 import com.ivan.cinema.data.FollowStore
 import com.ivan.cinema.data.MergedVod
 import com.ivan.cinema.data.VodDetail
+import com.ivan.cinema.db.FavEntry
 import com.ivan.cinema.db.FollowEntry
 import com.ivan.cinema.db.WatchEntry
 import com.ivan.cinema.ui.components.DefaultLiquid
@@ -184,6 +186,17 @@ fun DetailScreen(
         followed = runCatching { FollowStore.isFollowed(ctx, merged.key) }.getOrDefault(false)
     }
     val followScope = rememberCoroutineScope()
+
+    // ── 片单收藏自读 ──
+    // 与追剧同理由：详情页长期存活在推入栈里，收藏状态必须自己从 DB 读，
+    // 否则在「我的片单」移除后回到详情页，按钮仍显示「已收藏」。
+    var faved by remember(merged.key) { mutableStateOf(false) }
+    var favTick by remember(merged.key) { mutableStateOf(0) }
+    // 同时挂在 resumeTick 上：从「我的片单」移除后回到本页（ON_RESUME）要能立刻反映
+    LaunchedEffect(merged.key, favTick, resumeTick) {
+        faved = runCatching { FavStore.isFav(ctx, merged.key) }.getOrDefault(false)
+    }
+    val favScope = rememberCoroutineScope()
     // 通知权限只在「本页第一次订阅」时申请一次；被拒绝也照样能追剧，只是收不到提醒
     var askedNotif by remember(merged.key) { mutableStateOf(false) }
     val notifPermLauncher = rememberLauncherForActivityResult(
@@ -208,11 +221,24 @@ fun DetailScreen(
             // 超出 280dp 英雄区时原来会直接画到下面的播放按钮上，必须裁掉。
             Box(Modifier.fillMaxWidth().height(280.dp).clipToBounds()) {
                 if (merged.pic.isNotEmpty()) {
-                    AsyncImage(
+                    SubcomposeAsyncImage(
                         model = merged.pic,
                         contentDescription = null,
                         contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
+                        modifier = Modifier.fillMaxSize(),
+                        // 加载中给渐变占位，失败退到 FilmTile —— 二者都不同于「一片空白」
+                        loading = {
+                            Box(
+                                Modifier
+                                    .fillMaxSize()
+                                    .background(
+                                        Brush.verticalGradient(
+                                            listOf(pal.surfaceRaised, pal.surface)
+                                        )
+                                    )
+                            )
+                        },
+                        error = { FilmTile(Modifier.fillMaxSize()) }
                     )
                 }
                 // 顶部压暗：海报可能是亮色，返回按钮和状态栏需要一层底
@@ -449,7 +475,60 @@ fun DetailScreen(
                 Text(
                     if (followed) "每天检查一次，更新了通知你" else "更新了通知你",
                     style = MaterialTheme.typography.labelSmall,
-                    color = pal.inkMutedOnGlass
+                    color = pal.inkMutedOnGlass,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    // 占满中段：收藏胶囊靠右，长文案先省略，不与两个胶囊抢位
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(Space.md))
+                // ── ②c 片单收藏（与追剧同款描边胶囊，靠右；不改动追剧与主 CTA）──
+                val favInteraction = remember { MutableInteractionSource() }
+                Text(
+                    if (faved) "已收藏" else "收藏",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = if (faved) pal.accentInk else pal.ink,
+                    modifier = Modifier
+                        .pressDip(favInteraction, to = press.control)
+                        .clip(RoundedCornerShape(Radius.pill))
+                        .background(if (faved) pal.accent else Color.Transparent)
+                        .then(
+                            if (faved) Modifier
+                            else Modifier.border(1.dp, pal.hairline, RoundedCornerShape(Radius.pill))
+                        )
+                        .clickable(
+                            interactionSource = favInteraction,
+                            indication = null
+                        ) {
+                            val target = !faved
+                            faved = target
+                            favScope.launch {
+                                runCatching {
+                                    if (target) {
+                                        // 源信息优先取当前详情线路，退到列表命中（merged.hits 至少一条）
+                                        val hit = merged.hits.firstOrNull()
+                                        FavStore.add(
+                                            ctx,
+                                            FavEntry(
+                                                vodKey = merged.key,
+                                                name = merged.name,
+                                                year = merged.year,
+                                                pic = merged.pic,
+                                                sourceApi = current?.source?.api ?: hit?.source?.api.orEmpty(),
+                                                sourceName = current?.source?.name ?: hit?.source?.name.orEmpty(),
+                                                vodId = current?.vodId ?: hit?.vodId.orEmpty(),
+                                                addedAt = System.currentTimeMillis()
+                                            )
+                                        )
+                                    } else {
+                                        FavStore.remove(ctx, merged.key)
+                                    }
+                                }
+                                favTick++   // 回读 DB，让按钮反映真实落库结果
+                            }
+                        }
+                        // labelLarge 18dp + 15*2 = 48dp，达最小触摸目标
+                        .padding(horizontal = Space.lg, vertical = 15.dp)
                 )
             }
 
