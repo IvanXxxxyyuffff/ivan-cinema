@@ -108,17 +108,25 @@ class ScreenshotTest {
     private fun shot(name: String) {
         rule.waitForIdle()
         val bmp = rule.onRoot().captureToImage().asAndroidBitmap()
+        val resolver = rule.activity.contentResolver
+        val collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        val relPath = Environment.DIRECTORY_PICTURES + "/ivanshots/"
+        // 重跑必须先删同名条目：DISPLAY_NAME 唯一，直接 insert 会抛
+        // UNIQUE constraint failed: files._data —— 设备上的 png 被 rm 掉了，
+        // 但 MediaStore 的行还在，于是第二次重拍整轮报废（踩过）。
+        runCatching {
+            resolver.delete(
+                collection,
+                "${MediaStore.Images.Media.DISPLAY_NAME}=? AND ${MediaStore.Images.Media.RELATIVE_PATH}=?",
+                arrayOf("$name.png", relPath)
+            )
+        }
         val values = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, "$name.png")
             put(MediaStore.Images.Media.MIME_TYPE, "image/png")
-            put(
-                MediaStore.Images.Media.RELATIVE_PATH,
-                Environment.DIRECTORY_PICTURES + "/ivanshots"
-            )
+            put(MediaStore.Images.Media.RELATIVE_PATH, relPath)
         }
-        val resolver = rule.activity.contentResolver
-        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-            ?: error("MediaStore insert 失败")
+        val uri = resolver.insert(collection, values) ?: error("MediaStore insert 失败")
         resolver.openOutputStream(uri)!!.use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
         captured++
         println("SHOT-OK $name")
